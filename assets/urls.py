@@ -27,5 +27,6 @@ urlpatterns = [
     path('api/settings/save/', views.api_settings_save, name='api_settings_save'),
     path('api/export/', views.api_export_data, name='api_export'),
     path('api/import/', views.api_import_data, name='api_import'),
+    path('api/performance/', views.api_performance_calc, name='api_performance_calc'),
     path('api/test-llm/', views.api_test_llm, name='api_test_llm'),
 ]

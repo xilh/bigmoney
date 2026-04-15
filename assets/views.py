@@ -634,6 +634,23 @@ def api_settings_save(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
+def api_performance_calc(request):
+    """计算指定区间的投资回报率"""
+    try:
+        from .services.performance import calculate_interval_performance
+        
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+
+        if not start_date or not end_date:
+            return JsonResponse({'success': False, 'error': 'Missing start_date or end_date'}, status=400)
+
+        result = calculate_interval_performance(start_date, end_date)
+        return JsonResponse({'success': True, 'data': result})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
 def api_export_data(request):
     """导出全部数据为 JSON"""
     data = {
