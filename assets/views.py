@@ -353,6 +353,30 @@ def api_holding_delete(request, holding_id):
 
 
 @require_POST
+def api_transaction_create(request):
+    """记录一笔资金出入"""
+    try:
+        data = json.loads(request.body)
+        action = data.get('action')
+        asset_name = data.get('asset_name')
+        amount = Decimal(str(data.get('amount', 0)))
+        tx_date = data.get('date') or date.today().isoformat()
+
+        if not action or not asset_name or amount <= 0:
+            return JsonResponse({'success': False, 'error': '请提供完整的资金记录信息'}, status=400)
+
+        Transaction.objects.create(
+            action=action,
+            asset_name=asset_name,
+            amount=amount,
+            date=tx_date,
+        )
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_POST
 def api_upload_screenshot(request):
     """上传并识别截图"""
     try:

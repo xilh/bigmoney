@@ -72,10 +72,10 @@
         <div class="timeline">
             {% for tx in transactions %}
             <div class="timeline-item">
-                <div class="timeline-dot" style="background: {% if tx.action == 'buy' %}var(--color-success){% elif tx.action == 'sell' %}var(--color-danger){% else %}var(--color-primary){% endif %};"></div>
+                <div class="timeline-dot" style="background: {% if tx.action == 'buy' or tx.action == 'transfer' %}var(--color-success){% elif tx.action == 'sell' or tx.action == 'withdraw' %}var(--color-danger){% else %}var(--color-primary){% endif %};"></div>
                 <div class="timeline-date">{{ tx.date|date:"Y-m-d" }}</div>
                 <div class="timeline-content">
-                    <span class="badge {% if tx.action == 'buy' %}badge-success{% elif tx.action == 'sell' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
+                    <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
                     {{ tx.asset_name }}
                     <span class="font-mono" style="margin-left: 8px;">¥{{ tx.amount|floatformat:0 }}</span>
                 </div>

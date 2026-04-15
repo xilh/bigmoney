@@ -15,6 +15,7 @@ urlpatterns = [
 
     # API
     path('api/holding/create/', views.api_holding_create, name='api_holding_create'),
+    path('api/transaction/create/', views.api_transaction_create, name='api_transaction_create'),
     path('api/holding/<int:holding_id>/update/', views.api_holding_update, name='api_holding_update'),
     path('api/holding/<int:holding_id>/delete/', views.api_holding_delete, name='api_holding_delete'),
     path('api/upload/', views.api_upload_screenshot, name='api_upload'),
