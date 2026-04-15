@@ -55,7 +55,7 @@
 </div>
 
 <!-- Charts Row -->
-<div class="grid-2 mb-3 animate-in stagger-1">
+<div class="grid-3 mb-3 animate-in stagger-1">
     <!-- Allocation Donut -->
     <div class="card">
         <div class="card-header">
@@ -65,6 +65,19 @@
         <div class="card-body">
             <div class="chart-container" style="max-height: 320px; display: flex; justify-content: center;">
                 <canvas id="allocationChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Platform Distribution -->
+    <div class="card">
+        <div class="card-header">
+            <h3>🏦 平台分布</h3>
+            <span class="text-sm text-muted">各平台资产占比</span>
+        </div>
+        <div class="card-body">
+            <div class="chart-container" style="max-height: 320px; display: flex; justify-content: center;">
+                <canvas id="platformChart"></canvas>
             </div>
         </div>
     </div>
@@ -142,7 +155,10 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    Chart.register(ChartDataLabels);
+
     const layersData = {{ layers_json|safe }};
+    const platformsData = {{ platforms_json|safe }};
     
     if (layersData.length > 0) {
         const ctx = document.getElementById('allocationChart').getContext('2d');
@@ -181,6 +197,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 maintainAspectRatio: true,
                 cutout: '40%',
                 plugins: {
+                    datalabels: {
+                        color: '#fff',
+                        font: { family: 'Inter', weight: 'bold', size: 11 },
+                        formatter: function(value, ctx) {
+                            // 只在数值大于 2% 时显示，避免拥挤；只在外环（实际比例）显示
+                            if (ctx.datasetIndex === 0 && value >= 2) {
+                                return value.toFixed(1) + '%';
+                            }
+                            return null;
+                        },
+                        textStrokeColor: 'rgba(0,0,0,0.5)',
+                        textStrokeWidth: 2,
+                    },
                     legend: {
                         position: 'bottom',
                         labels: {
@@ -200,6 +229,81 @@ document.addEventListener('DOMContentLoaded', function() {
                         callbacks: {
                             label: function(ctx) {
                                 return ctx.dataset.label + ': ' + ctx.parsed.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    if (platformsData && platformsData.length > 0) {
+        const ctxPlatform = document.getElementById('platformChart').getContext('2d');
+        const platformLabels = platformsData.map(p => p.name);
+        const platformValues = platformsData.map(p => p.value);
+        
+        // 生成平台颜色
+        const baseColors = [
+            'hsl(210, 100%, 60%)', 'hsl(265, 85%, 65%)', 'hsl(152, 65%, 50%)',
+            'hsl(35, 90%, 55%)', 'hsl(300, 65%, 55%)', 'hsl(200, 80%, 55%)',
+            'hsl(0, 78%, 60%)', 'hsl(45, 95%, 55%)'
+        ];
+        const platformColors = platformLabels.map((_, i) => baseColors[i % baseColors.length]);
+
+        new Chart(ctxPlatform, {
+            type: 'pie',
+            data: {
+                labels: platformLabels,
+                datasets: [{
+                    data: platformValues,
+                    backgroundColor: platformColors,
+                    borderColor: 'transparent',
+                    borderWidth: 2,
+                    hoverOffset: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    datalabels: {
+                        color: '#fff',
+                        font: { family: 'Inter', weight: 'bold', size: 11 },
+                        formatter: function(value, ctx) {
+                            const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = (value * 100 / total);
+                            // 仅显示大于 3% 的区块的占比及金额
+                            if (percentage >= 3) {
+                                const formattedValue = value >= 10000 ? (value / 10000).toFixed(1) + '万' : value.toLocaleString(undefined, {maximumFractionDigits: 0});
+                                return [percentage.toFixed(1) + '%', '¥' + formattedValue];
+                            }
+                            return null;
+                        },
+                        align: 'center',
+                        textStrokeColor: 'rgba(0,0,0,0.5)',
+                        textStrokeWidth: 2,
+                    },
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: '#94a3b8',
+                            padding: 16,
+                            font: { family: 'Inter', size: 12 },
+                            usePointStyle: true,
+                            pointStyleWidth: 10,
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                        titleFont: { family: 'Inter' },
+                        bodyFont: { family: 'Inter' },
+                        padding: 12,
+                        cornerRadius: 8,
+                        callbacks: {
+                            label: function(ctx) {
+                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ctx.parsed * 100 / total;
+                                return ctx.label + ': ¥' + Number(ctx.parsed).toLocaleString(undefined, {maximumFractionDigits: 0}) + ' (' + percentage.toFixed(1) + '%)';
                             }
                         }
                     }

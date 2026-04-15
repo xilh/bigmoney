@@ -11,31 +11,11 @@
     <button class="btn btn-primary" onclick="createSnapshot()">📸 记录当前快照</button>
 </div>
 
-<!-- Net Value Chart -->
-<div class="card mb-3 animate-in">
-    <div class="card-header">
-        <h3>📈 资产总值走势</h3>
-    </div>
-    <div class="card-body">
-        {% if snapshots %}
-        <div class="chart-container" style="height: 300px;">
-            <canvas id="netValueChart"></canvas>
-        </div>
-        {% else %}
-        <div class="empty-state">
-            <div class="empty-state-icon">📈</div>
-            <div class="empty-state-text">暂无历史数据</div>
-            <div class="empty-state-hint">点击「记录当前快照」开始追踪资产变化</div>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<!-- Layer History Chart -->
+<!-- Layer History Mixed Chart -->
 {% if snapshots %}
 <div class="card mb-3 animate-in stagger-1">
     <div class="card-header">
-        <h3>📊 各层级市值变化</h3>
+        <h3>📈 资产总值与层级构成演变</h3>
     </div>
     <div class="card-body">
         <div class="chart-container" style="height: 300px;">
@@ -58,14 +38,18 @@
                     <th>日期</th>
                     <th class="text-right">总资产</th>
                     <th>备注</th>
+                    <th>操作</th>
                 </tr>
             </thead>
             <tbody>
                 {% for s in snapshots %}
                 <tr>
-                    <td>{{ s.date }}</td>
+                    <td>{{ s.date|date:"Y-m-d H:i:s" }}</td>
                     <td class="text-right font-mono">¥{{ s.total_value|floatformat:0 }}</td>
                     <td class="text-muted">{{ s.notes|default:"-" }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-danger" onclick="deleteSnapshot({{ s.id }}, '{{ s.date }}')">删除</button>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -112,58 +96,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const snapshots = {{ snapshots_json|safe }};
     
     if (snapshots.length > 0) {
-        // Net value line chart
-        const ctx1 = document.getElementById('netValueChart').getContext('2d');
-        new Chart(ctx1, {
-            type: 'line',
-            data: {
-                labels: snapshots.map(s => s.date),
-                datasets: [{
-                    label: '总资产',
-                    data: snapshots.map(s => s.total_value),
-                    borderColor: 'hsl(210, 100%, 60%)',
-                    backgroundColor: 'hsla(210, 100%, 60%, 0.1)',
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 4,
-                    pointHoverRadius: 6,
-                    borderWidth: 2,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: 'rgba(15, 23, 42, 0.95)',
-                        padding: 12,
-                        cornerRadius: 8,
-                        titleFont: { family: 'Inter' },
-                        bodyFont: { family: 'Inter' },
-                        callbacks: {
-                            label: ctx => '¥' + Number(ctx.parsed.y).toLocaleString(),
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
-                        grid: { color: 'rgba(255,255,255,0.05)' },
-                    },
-                    y: {
-                        ticks: {
-                            color: '#64748b',
-                            font: { family: 'Inter' },
-                            callback: v => '¥' + (v >= 10000 ? (v/10000).toFixed(0) + '万' : v.toLocaleString()),
-                        },
-                        grid: { color: 'rgba(255,255,255,0.05)' },
-                    },
-                },
-            },
-        });
-
-        // Layer stacked area chart
         const layerNames = Object.keys(snapshots[0].layer_values || {});
         const layerColors = [
             'hsl(152, 65%, 50%)', 'hsl(200, 80%, 55%)',
@@ -172,24 +104,47 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (layerNames.length > 0) {
             const ctx2 = document.getElementById('layerHistoryChart').getContext('2d');
+            
+            // Build datasets: 1 Line chart (Total), multiple Bar charts (Layers)
+            const datasets = [
+                {
+                    label: '总资产',
+                    type: 'line',
+                    data: snapshots.map(s => s.total_value),
+                    borderColor: 'hsl(210, 100%, 60%)',
+                    backgroundColor: 'hsl(210, 100%, 60%)',
+                    fill: false,
+                    tension: 0.3,
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    stack: 'line-total',
+                    order: 0, // Draw on top
+                },
+                ...layerNames.map((name, i) => ({
+                    label: name,
+                    type: 'bar',
+                    data: snapshots.map(s => (s.layer_values || {})[name] || 0),
+                    borderColor: layerColors[i % layerColors.length],
+                    backgroundColor: layerColors[i % layerColors.length] + 'DD',
+                    borderWidth: 1,
+                    stack: 'bar-layers',
+                    order: 1,
+                }))
+            ];
+
             new Chart(ctx2, {
-                type: 'line',
                 data: {
                     labels: snapshots.map(s => s.date),
-                    datasets: layerNames.map((name, i) => ({
-                        label: name,
-                        data: snapshots.map(s => (s.layer_values || {})[name] || 0),
-                        borderColor: layerColors[i % layerColors.length],
-                        backgroundColor: layerColors[i % layerColors.length] + '20',
-                        fill: true,
-                        tension: 0.3,
-                        borderWidth: 2,
-                        pointRadius: 2,
-                    })),
+                    datasets: datasets,
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
                     plugins: {
                         legend: {
                             labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, usePointStyle: true },
@@ -234,6 +189,27 @@ function createSnapshot() {
             showToast('创建失败: ' + data.error, 'error');
         }
     });
+}
+
+function deleteSnapshot(id, dateStr) {
+    if (!confirm(`确定删除 ${dateStr} 的快照？删除后其数据将从图表中被移除。`)) return;
+
+    fetch(`/api/snapshot/${id}/delete/`, {
+        method: 'DELETE',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast('快照已删除', 'success');
+            setTimeout(() => location.reload(), 500);
+        } else {
+            showToast('删除失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => showToast('请求失败', 'error'));
 }
 </script>
 {% endblock %}

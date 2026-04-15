@@ -14,6 +14,35 @@
     </div>
 </div>
 
+<style>
+.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 18px !important;
+}
+.sortable::after {
+    content: '↕';
+    position: absolute;
+    right: 4px;
+    opacity: 0.3;
+    font-size: 0.8em;
+}
+.sortable[data-sort="asc"]::after {
+    content: '↑';
+    opacity: 1;
+    color: var(--color-primary);
+}
+.sortable[data-sort="desc"]::after {
+    content: '↓';
+    opacity: 1;
+    color: var(--color-primary);
+}
+.sortable:hover {
+    color: var(--color-text);
+}
+</style>
+
 <!-- Layer Accordion -->
 {% for layer in layers %}
 {% with layer_data=layers_data|dictsort:"order" %}
@@ -44,13 +73,13 @@
             <table>
                 <thead>
                     <tr>
-                        <th>名称</th>
-                        <th>平台</th>
-                        <th>代码</th>
-                        <th>类型</th>
-                        <th class="text-right">数量/份额</th>
-                        <th class="text-right">市值</th>
-                        <th class="text-right">盈亏</th>
+                        <th class="sortable" onclick="sortTable(this, 0, 'string')">名称</th>
+                        <th class="sortable" onclick="sortTable(this, 1, 'string')">平台</th>
+                        <th class="sortable" onclick="sortTable(this, 2, 'string')">代码</th>
+                        <th class="sortable" onclick="sortTable(this, 3, 'string')">类型</th>
+                        <th class="sortable text-right" onclick="sortTable(this, 4, 'number')">数量/份额</th>
+                        <th class="sortable text-right" onclick="sortTable(this, 5, 'number')">市值</th>
+                        <th class="sortable text-right" onclick="sortTable(this, 6, 'number')">盈亏</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -167,6 +196,35 @@
 function toggleAccordion(header) {
     const item = header.parentElement;
     item.classList.toggle('open');
+}
+
+function sortTable(th, colIndex, type) {
+    const table = th.closest('table');
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    
+    const isAsc = th.dataset.sort === 'asc';
+    const newSort = isAsc ? 'desc' : 'asc';
+    
+    table.querySelectorAll('.sortable').forEach(h => h.removeAttribute('data-sort'));
+    th.dataset.sort = newSort;
+
+    rows.sort((a, b) => {
+        let valA = a.cells[colIndex].textContent.trim();
+        let valB = b.cells[colIndex].textContent.trim();
+        
+        if (type === 'number') {
+            const matchA = valA.match(/-?[\d,]+(\.\d+)?/);
+            const matchB = valB.match(/-?[\d,]+(\.\d+)?/);
+            valA = matchA ? parseFloat(matchA[0].replace(/,/g, '')) : 0;
+            valB = matchB ? parseFloat(matchB[0].replace(/,/g, '')) : 0;
+            return newSort === 'asc' ? valA - valB : valB - valA;
+        } else {
+            return newSort === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        }
+    });
+    
+    tbody.append(...rows);
 }
 
 // Open all by default

@@ -61,6 +61,7 @@ def _get_layers_summary():
 
 
 # ==================== 页面视图 ====================
+from django.db.models import Sum
 
 def dashboard(request):
     """仪表盘"""
@@ -78,12 +79,26 @@ def dashboard(request):
     # 偏差警告
     alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
 
+    # 平台分布
+    platform_distribution = list(Holding.objects.values('platform')
+        .annotate(total=Sum('market_value'))
+        .order_by('-total'))
+    
+    platforms_data = []
+    for item in platform_distribution:
+        platform_name = item['platform'].strip() if item['platform'] else '其他/未知'
+        platforms_data.append({
+            'name': platform_name,
+            'value': float(item['total'] or 0)
+        })
+
     context = {
         'total_value': total_value,
         'total_profit': total_profit,
         'total_profit_pct': total_profit_pct,
         'layers_data': layers_data,
         'layers_json': json.dumps(layers_data, cls=DecimalEncoder, ensure_ascii=False),
+        'platforms_json': json.dumps(platforms_data, ensure_ascii=False),
         'recent_transactions': recent_transactions,
         'alerts': alerts,
         'holdings_count': Holding.objects.count(),
@@ -132,9 +147,9 @@ def rebalance_page(request):
     context = {
         'total_value': total_value,
         'rebalance': rebalance_result,
-        'rebalance_json': json.dumps(rebalance_result, ensure_ascii=False),
+        'rebalance_json': json.dumps(rebalance_result, cls=DecimalEncoder, ensure_ascii=False),
         'layers_data': layers_data,
-        'layers_json': json.dumps(layers_data, ensure_ascii=False),
+        'layers_json': json.dumps(layers_data, cls=DecimalEncoder, ensure_ascii=False),
         'drawdown_protocols': DRAWDOWN_PROTOCOLS,
     }
     return render(request, 'assets/rebalance.html', context)
@@ -147,12 +162,12 @@ def history_page(request):
 
     snapshots_json = json.dumps([
         {
-            'date': s.date.isoformat(),
+            'date': timezone.localtime(s.date).strftime('%Y-%m-%d %H:%M:%S'),
             'total_value': s.total_value,
             'layer_values': s.layer_values,
         }
         for s in reversed(list(snapshots))
-    ], ensure_ascii=False)
+    ], cls=DecimalEncoder, ensure_ascii=False)
 
     context = {
         'snapshots': snapshots,
@@ -503,7 +518,7 @@ def api_snapshot_create(request):
         data = json.loads(request.body) if request.body else {}
 
         snapshot = Snapshot.objects.create(
-            date=data.get('date', date.today()),
+            date=data.get('date') or timezone.now(),
             total_value=total_value,
             layer_values=layer_values,
             layer_ratios=layer_ratios,
@@ -514,6 +529,17 @@ def api_snapshot_create(request):
             'id': snapshot.id,
             'total_value': total_value,
         })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_http_methods(["DELETE"])
+def api_snapshot_delete(request, snapshot_id):
+    """删除资产快照"""
+    try:
+        snapshot = get_object_or_404(Snapshot, id=snapshot_id)
+        snapshot.delete()
+        return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 

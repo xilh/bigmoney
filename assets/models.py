@@ -92,7 +92,7 @@ class Holding(models.Model):
 
 class Snapshot(models.Model):
     """资产快照（用于历史记录）"""
-    date = models.DateField('快照日期', default=timezone.now)
+    date = models.DateTimeField('快照时间', default=timezone.now)
     total_value = models.DecimalField('总资产(元)', max_digits=18, decimal_places=2, default=0)
     layer_values = models.JSONField('各层级市值', default=dict)
     layer_ratios = models.JSONField('各层级比例', default=dict)
@@ -100,7 +100,7 @@ class Snapshot(models.Model):
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
-        ordering = ['-date']
+        ordering = ['-date', '-id']
         verbose_name = '资产快照'
         verbose_name_plural = '资产快照'
 
