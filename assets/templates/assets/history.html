@@ -1,0 +1,239 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}历史记录{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>历史记录</h2>
+        <p>资产净值变化与操作日志</p>
+    </div>
+    <button class="btn btn-primary" onclick="createSnapshot()">📸 记录当前快照</button>
+</div>
+
+<!-- Net Value Chart -->
+<div class="card mb-3 animate-in">
+    <div class="card-header">
+        <h3>📈 资产总值走势</h3>
+    </div>
+    <div class="card-body">
+        {% if snapshots %}
+        <div class="chart-container" style="height: 300px;">
+            <canvas id="netValueChart"></canvas>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">📈</div>
+            <div class="empty-state-text">暂无历史数据</div>
+            <div class="empty-state-hint">点击「记录当前快照」开始追踪资产变化</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Layer History Chart -->
+{% if snapshots %}
+<div class="card mb-3 animate-in stagger-1">
+    <div class="card-header">
+        <h3>📊 各层级市值变化</h3>
+    </div>
+    <div class="card-body">
+        <div class="chart-container" style="height: 300px;">
+            <canvas id="layerHistoryChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Snapshots Table -->
+<div class="card mb-3 animate-in stagger-2">
+    <div class="card-header">
+        <h3>📋 快照记录</h3>
+    </div>
+    <div class="card-body">
+        {% if snapshots %}
+        <table>
+            <thead>
+                <tr>
+                    <th>日期</th>
+                    <th class="text-right">总资产</th>
+                    <th>备注</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in snapshots %}
+                <tr>
+                    <td>{{ s.date }}</td>
+                    <td class="text-right font-mono">¥{{ s.total_value|floatformat:0 }}</td>
+                    <td class="text-muted">{{ s.notes|default:"-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-text">暂无快照</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Transaction Log -->
+<div class="card animate-in stagger-3">
+    <div class="card-header">
+        <h3>📝 操作日志</h3>
+    </div>
+    <div class="card-body">
+        {% if transactions %}
+        <div class="timeline">
+            {% for tx in transactions %}
+            <div class="timeline-item">
+                <div class="timeline-dot" style="background: {% if tx.action == 'buy' %}var(--color-success){% elif tx.action == 'sell' %}var(--color-danger){% else %}var(--color-primary){% endif %};"></div>
+                <div class="timeline-date">{{ tx.date|date:"Y-m-d" }}</div>
+                <div class="timeline-content">
+                    <span class="badge {% if tx.action == 'buy' %}badge-success{% elif tx.action == 'sell' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
+                    {{ tx.asset_name }}
+                    <span class="font-mono" style="margin-left: 8px;">¥{{ tx.amount|floatformat:0 }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">📝</div>
+            <div class="empty-state-text">暂无操作记录</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const snapshots = {{ snapshots_json|safe }};
+    
+    if (snapshots.length > 0) {
+        // Net value line chart
+        const ctx1 = document.getElementById('netValueChart').getContext('2d');
+        new Chart(ctx1, {
+            type: 'line',
+            data: {
+                labels: snapshots.map(s => s.date),
+                datasets: [{
+                    label: '总资产',
+                    data: snapshots.map(s => s.total_value),
+                    borderColor: 'hsl(210, 100%, 60%)',
+                    backgroundColor: 'hsla(210, 100%, 60%, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    borderWidth: 2,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                        padding: 12,
+                        cornerRadius: 8,
+                        titleFont: { family: 'Inter' },
+                        bodyFont: { family: 'Inter' },
+                        callbacks: {
+                            label: ctx => '¥' + Number(ctx.parsed.y).toLocaleString(),
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                    },
+                    y: {
+                        ticks: {
+                            color: '#64748b',
+                            font: { family: 'Inter' },
+                            callback: v => '¥' + (v >= 10000 ? (v/10000).toFixed(0) + '万' : v.toLocaleString()),
+                        },
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                    },
+                },
+            },
+        });
+
+        // Layer stacked area chart
+        const layerNames = Object.keys(snapshots[0].layer_values || {});
+        const layerColors = [
+            'hsl(152, 65%, 50%)', 'hsl(200, 80%, 55%)',
+            'hsl(35, 90%, 55%)', 'hsl(45, 95%, 55%)', 'hsl(300, 65%, 55%)'
+        ];
+
+        if (layerNames.length > 0) {
+            const ctx2 = document.getElementById('layerHistoryChart').getContext('2d');
+            new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: snapshots.map(s => s.date),
+                    datasets: layerNames.map((name, i) => ({
+                        label: name,
+                        data: snapshots.map(s => (s.layer_values || {})[name] || 0),
+                        borderColor: layerColors[i % layerColors.length],
+                        backgroundColor: layerColors[i % layerColors.length] + '20',
+                        fill: true,
+                        tension: 0.3,
+                        borderWidth: 2,
+                        pointRadius: 2,
+                    })),
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, usePointStyle: true },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                        },
+                        y: {
+                            stacked: true,
+                            ticks: {
+                                color: '#64748b',
+                                font: { family: 'Inter' },
+                                callback: v => '¥' + (v >= 10000 ? (v/10000).toFixed(0) + '万' : v.toLocaleString()),
+                            },
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                        },
+                    },
+                },
+            });
+        }
+    }
+});
+
+function createSnapshot() {
+    fetch('{% url "assets:api_snapshot_create" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast('快照已创建', 'success');
+            setTimeout(() => location.reload(), 500);
+        } else {
+            showToast('创建失败: ' + data.error, 'error');
+        }
+    });
+}
+</script>
+{% endblock %}

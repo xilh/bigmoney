@@ -1,0 +1,279 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}资产管理{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>资产管理</h2>
+        <p>按五层架构管理您的所有持仓 · 总资产 ¥{{ total_value|floatformat:0 }}</p>
+    </div>
+    <div class="btn-group">
+        <a href="{% url 'assets:upload' %}" class="btn btn-secondary">📷 截图识别</a>
+        <button class="btn btn-primary" onclick="openAddModal()">+ 手动添加</button>
+    </div>
+</div>
+
+<!-- Layer Accordion -->
+{% for layer in layers %}
+{% with layer_data=layers_data|dictsort:"order" %}
+<div class="accordion-item animate-in stagger-{{ layer.order }}" id="layer-{{ layer.id }}">
+    <div class="accordion-header" onclick="toggleAccordion(this)">
+        <div class="accordion-header-left">
+            <div class="layer-dot" style="background: {{ layer.color }};"></div>
+            <div>
+                <strong>{{ layer.name }}</strong>
+                <span class="text-sm text-muted" style="margin-left: 8px;">目标 {{ layer.target_ratio }}%</span>
+            </div>
+        </div>
+        <div class="accordion-header-right">
+            <span class="font-mono">¥{{ layer.total_market_value|floatformat:0 }}</span>
+            {% for ld in layers_data %}
+                {% if ld.id == layer.id %}
+                    <span class="badge {% if ld.deviation > 5 or ld.deviation < -5 %}badge-danger{% elif ld.deviation > 3 or ld.deviation < -3 %}badge-warning{% else %}badge-success{% endif %}">
+                        {{ ld.actual_ratio }}% ({% if ld.deviation >= 0 %}+{% endif %}{{ ld.deviation }}%)
+                    </span>
+                {% endif %}
+            {% endfor %}
+            <span class="accordion-arrow">▾</span>
+        </div>
+    </div>
+    <div class="accordion-body">
+        <div class="accordion-content">
+            {% if layer.holdings.all %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>平台</th>
+                        <th>代码</th>
+                        <th>类型</th>
+                        <th class="text-right">数量/份额</th>
+                        <th class="text-right">市值</th>
+                        <th class="text-right">盈亏</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for h in layer.holdings.all %}
+                    <tr id="holding-row-{{ h.id }}">
+                        <td><strong>{{ h.name }}</strong></td>
+                        <td class="text-muted text-sm">{{ h.platform|default:"-" }}</td>
+                        <td class="text-muted font-mono">{{ h.code|default:"-" }}</td>
+                        <td><span class="badge badge-neutral">{{ h.get_asset_type_display }}</span></td>
+                        <td class="text-right font-mono">{{ h.quantity|floatformat:2 }}</td>
+                        <td class="text-right font-mono">¥{{ h.market_value|floatformat:0 }}</td>
+                        <td class="text-right font-mono {% if h.profit_loss >= 0 %}positive{% else %}negative{% endif %}">
+                            {% if h.profit_loss %}{% if h.profit_loss >= 0 %}+{% endif %}{{ h.profit_loss|floatformat:0 }} ({{ h.profit_loss_pct|floatformat:1 }}%){% else %}-{% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group">
+                                <button class="btn btn-sm btn-secondary" onclick="openEditModal({{ h.id }}, '{{ h.name|escapejs }}', '{{ h.code }}', '{{ h.asset_type }}', {{ h.quantity }}, {{ h.cost_price|default:'null' }}, {{ h.current_price|default:'null' }}, {{ h.market_value }}, {{ layer.id }}, '{{ h.notes|escapejs }}', '{{ h.platform|escapejs }}')">编辑</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteHolding({{ h.id }})">删除</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <div class="empty-state-text">该层级暂无持仓</div>
+                <button class="btn btn-sm btn-primary mt-1" onclick="openAddModal({{ layer.id }})">+ 添加持仓</button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endwith %}
+{% endfor %}
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="holdingModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="modalTitle">添加持仓</h3>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <input type="hidden" id="editHoldingId" value="">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">所属层级 *</label>
+                    <select class="form-control" id="holdingLayer">
+                        {% for layer in layers %}
+                        <option value="{{ layer.id }}">{{ layer.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">资产类型</label>
+                    <select class="form-control" id="holdingType">
+                        {% for value, label in asset_type_choices %}
+                        <option value="{{ value }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">名称 *</label>
+                    <input type="text" class="form-control" id="holdingName" placeholder="如：华泰柏瑞沪深300ETF">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">代码</label>
+                    <input type="text" class="form-control" id="holdingCode" placeholder="如：510300">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">数量/份额</label>
+                    <input type="number" class="form-control" id="holdingQuantity" step="any" placeholder="0">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">成本价</label>
+                    <input type="number" class="form-control" id="holdingCostPrice" step="any" placeholder="选填">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">当前价/净值</label>
+                    <input type="number" class="form-control" id="holdingCurrentPrice" step="any" placeholder="选填">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">市值(元)</label>
+                    <input type="number" class="form-control" id="holdingMarketValue" step="any" placeholder="0">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">来源平台</label>
+                    <input type="text" class="form-control" id="holdingPlatform" placeholder="如：招商银行、支付宝、天天基金">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">备注</label>
+                    <input type="text" class="form-control" id="holdingNotes" placeholder="选填">
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveHolding()">保存</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleAccordion(header) {
+    const item = header.parentElement;
+    item.classList.toggle('open');
+}
+
+// Open all by default
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.accordion-item').forEach(item => item.classList.add('open'));
+});
+
+function openAddModal(layerId) {
+    document.getElementById('modalTitle').textContent = '添加持仓';
+    document.getElementById('editHoldingId').value = '';
+    document.getElementById('holdingName').value = '';
+    document.getElementById('holdingCode').value = '';
+    document.getElementById('holdingType').value = 'other';
+    document.getElementById('holdingQuantity').value = '';
+    document.getElementById('holdingCostPrice').value = '';
+    document.getElementById('holdingCurrentPrice').value = '';
+    document.getElementById('holdingMarketValue').value = '';
+    document.getElementById('holdingPlatform').value = '';
+    document.getElementById('holdingNotes').value = '';
+    if (layerId) document.getElementById('holdingLayer').value = layerId;
+    document.getElementById('holdingModal').classList.add('active');
+}
+
+function openEditModal(id, name, code, type, qty, cost, current, mv, layerId, notes, platform) {
+    document.getElementById('modalTitle').textContent = '编辑持仓';
+    document.getElementById('editHoldingId').value = id;
+    document.getElementById('holdingName').value = name;
+    document.getElementById('holdingCode').value = code;
+    document.getElementById('holdingType').value = type;
+    document.getElementById('holdingQuantity').value = qty;
+    document.getElementById('holdingCostPrice').value = cost === null ? '' : cost;
+    document.getElementById('holdingCurrentPrice').value = current === null ? '' : current;
+    document.getElementById('holdingMarketValue').value = mv;
+    document.getElementById('holdingLayer').value = layerId;
+    document.getElementById('holdingPlatform').value = platform || '';
+    document.getElementById('holdingNotes').value = notes;
+    document.getElementById('holdingModal').classList.add('active');
+}
+
+function closeModal() {
+    document.getElementById('holdingModal').classList.remove('active');
+}
+
+function saveHolding() {
+    const editId = document.getElementById('editHoldingId').value;
+    const data = {
+        layer_id: parseInt(document.getElementById('holdingLayer').value),
+        name: document.getElementById('holdingName').value,
+        code: document.getElementById('holdingCode').value,
+        asset_type: document.getElementById('holdingType').value,
+        quantity: document.getElementById('holdingQuantity').value || 0,
+        cost_price: document.getElementById('holdingCostPrice').value || null,
+        current_price: document.getElementById('holdingCurrentPrice').value || null,
+        market_value: document.getElementById('holdingMarketValue').value || 0,
+        notes: document.getElementById('holdingNotes').value,
+        platform: document.getElementById('holdingPlatform').value,
+    };
+
+    if (!data.name) {
+        showToast('请输入资产名称', 'error');
+        return;
+    }
+
+    let url, method;
+    if (editId) {
+        url = `/api/holding/${editId}/update/`;
+        method = 'PUT';
+    } else {
+        url = '{% url "assets:api_holding_create" %}';
+        method = 'POST';
+    }
+
+    fetch(url, {
+        method: method,
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            showToast(editId ? '持仓已更新' : '持仓已添加', 'success');
+            closeModal();
+            setTimeout(() => location.reload(), 500);
+        } else {
+            showToast('保存失败: ' + result.error, 'error');
+        }
+    });
+}
+
+function deleteHolding(id) {
+    if (!confirm('确定删除该持仓？')) return;
+    fetch(`/api/holding/${id}/delete/`, {
+        method: 'DELETE',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            showToast('已删除', 'success');
+            document.getElementById('holding-row-' + id).remove();
+        } else {
+            showToast('删除失败', 'error');
+        }
+    });
+}
+</script>
+{% endblock %}

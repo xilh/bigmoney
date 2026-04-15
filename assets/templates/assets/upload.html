@@ -1,0 +1,304 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}截图识别{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>截图识别</h2>
+    <p>上传银行理财、基金、股票持仓截图，AI 自动识别并录入持仓信息</p>
+</div>
+
+{% if not has_api_key %}
+<div class="alert alert-warning mb-3">
+    ⚠️ 尚未配置 AI 模型，截图识别功能不可用。<a href="{% url 'assets:settings' %}" style="color: inherit; text-decoration: underline;">前往设置 → 配置本地模型或 Anthropic API</a>
+</div>
+{% endif %}
+
+<!-- Upload Zone -->
+<div class="card mb-3 animate-in">
+    <div class="card-body">
+        <div class="upload-zone" id="uploadZone">
+            <div class="upload-icon">📷</div>
+            <div class="upload-text">拖拽截图到此处，或点击选择文件</div>
+            <div class="upload-hint">支持 JPG、PNG、WebP 格式，最大 20MB</div>
+            <input type="file" id="fileInput" accept="image/*" multiple style="display:none;">
+        </div>
+    </div>
+</div>
+
+<!-- Processing Status -->
+<div class="card mb-3 hidden" id="processingCard">
+    <div class="card-header">
+        <h3>🔄 识别中...</h3>
+    </div>
+    <div class="card-body text-center" style="padding: 40px;">
+        <div class="loading-spinner" style="width: 40px; height: 40px; border-width: 3px;"></div>
+        <p class="mt-2 text-muted">正在使用 AI 分析截图内容，请稍候...</p>
+    </div>
+</div>
+
+<!-- Recognition Results -->
+<div class="card mb-3 hidden" id="resultsCard">
+    <div class="card-header flex-between">
+        <h3>✅ 识别结果</h3>
+        <div class="btn-group">
+            <button class="btn btn-secondary btn-sm" onclick="clearResults()">清除</button>
+            <button class="btn btn-primary btn-sm" onclick="confirmAll()">全部确认并录入</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- Platform Detection -->
+        <div class="flex-center gap-2 mb-2" style="padding: 10px 14px; background: var(--color-surface); border-radius: 8px; border: 1px solid var(--color-border);">
+            <span>📱</span>
+            <span class="text-sm" style="white-space: nowrap;">来源平台：</span>
+            <input type="text" class="form-control" id="detectedPlatform" placeholder="如：招商银行、支付宝、天天基金..." style="max-width: 250px; font-size: 0.85rem;">
+            <span class="text-xs text-muted">（AI 自动识别，可修改）</span>
+        </div>
+        <div class="table-wrapper">
+            <table id="resultsTable">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" checked onchange="toggleAllRows(this)"></th>
+                        <th>名称</th>
+                        <th>代码</th>
+                        <th>类型</th>
+                        <th>数量/份额</th>
+                        <th>成本价</th>
+                        <th>现价/净值</th>
+                        <th>市值(元)</th>
+                        <th>盈亏</th>
+                        <th>分配层级</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Upload History -->
+<div class="card animate-in stagger-1">
+    <div class="card-header">
+        <h3>📋 上传历史</h3>
+    </div>
+    <div class="card-body">
+        {% if uploads %}
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>时间</th>
+                    <th>状态</th>
+                    <th>识别数量</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for upload in uploads %}
+                <tr>
+                    <td class="text-muted">#{{ upload.id }}</td>
+                    <td>{{ upload.created_at|date:"Y-m-d H:i" }}</td>
+                    <td>
+                        <span class="badge {% if upload.status == 'confirmed' %}badge-success{% elif upload.status == 'recognized' %}badge-warning{% elif upload.status == 'failed' %}badge-danger{% else %}badge-neutral{% endif %}">
+                            {{ upload.get_status_display }}
+                        </span>
+                    </td>
+                    <td>{{ upload.recognized_data|length }} 项</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">📷</div>
+            <div class="empty-state-text">暂无上传记录</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const processingCard = document.getElementById('processingCard');
+const resultsCard = document.getElementById('resultsCard');
+const resultsBody = document.getElementById('resultsBody');
+
+let currentUploadId = null;
+let recognizedItems = [];
+
+// Layer options for select
+const layerOptions = [
+    {% for layer in layers %}
+    { id: {{ layer.id }}, name: '{{ layer.name }}', order: {{ layer.order }} },
+    {% endfor %}
+];
+
+const assetTypeOptions = [
+    {% for value, label in asset_type_choices %}
+    { value: '{{ value }}', label: '{{ label }}' },
+    {% endfor %}
+];
+
+// Drag & drop
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadZone.classList.add('drag-over');
+});
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+function handleFiles(files) {
+    for (const file of files) {
+        if (!file.type.startsWith('image/')) {
+            showToast('请上传图片文件', 'error');
+            continue;
+        }
+        uploadFile(file);
+    }
+}
+
+function uploadFile(file) {
+    processingCard.classList.remove('hidden');
+    resultsCard.classList.add('hidden');
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    fetch('{% url "assets:api_upload" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+        body: formData,
+    })
+    .then(r => r.json())
+    .then(data => {
+        processingCard.classList.add('hidden');
+        if (data.success) {
+            currentUploadId = data.upload_id;
+            recognizedItems = data.data;
+            // 设置 AI 识别的平台
+            document.getElementById('detectedPlatform').value = data.platform || '';
+            renderResults(data.data);
+            const platformMsg = data.platform ? `（来源: ${data.platform}）` : '';
+            showToast(`识别成功，发现 ${data.data.length} 项持仓${platformMsg}`, 'success');
+        } else {
+            showToast('识别失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => {
+        processingCard.classList.add('hidden');
+        showToast('上传失败: ' + e.message, 'error');
+    });
+}
+
+function renderResults(items) {
+    resultsCard.classList.remove('hidden');
+    resultsBody.innerHTML = '';
+
+    items.forEach((item, idx) => {
+        const tr = document.createElement('tr');
+        
+        // Find suggested layer
+        const suggestedLayer = item.suggested_layer || 1;
+        
+        // Build type select
+        let typeSelect = '<select class="form-control" data-field="asset_type" style="min-width:100px;">';
+        assetTypeOptions.forEach(opt => {
+            typeSelect += `<option value="${opt.value}" ${opt.value === item.asset_type ? 'selected' : ''}>${opt.label}</option>`;
+        });
+        typeSelect += '</select>';
+
+        // Build layer select
+        let layerSelect = '<select class="form-control" data-field="layer_id" style="min-width:100px;">';
+        layerOptions.forEach(opt => {
+            layerSelect += `<option value="${opt.id}" ${opt.order === suggestedLayer ? 'selected' : ''}>${opt.name}</option>`;
+        });
+        layerSelect += '</select>';
+
+        const plVal = item.profit_loss || 0;
+        const plClass = plVal >= 0 ? 'positive' : 'negative';
+
+        tr.innerHTML = `
+            <td><input type="checkbox" checked class="row-check"></td>
+            <td><input type="text" class="form-control" value="${item.name || ''}" data-field="name" style="min-width:140px;"></td>
+            <td><input type="text" class="form-control" value="${item.code || ''}" data-field="code" style="width:80px;"></td>
+            <td>${typeSelect}</td>
+            <td><input type="number" class="form-control" value="${item.quantity || 0}" data-field="quantity" step="any" style="width:90px;"></td>
+            <td><input type="number" class="form-control" value="${item.cost_price || ''}" data-field="cost_price" step="any" style="width:90px;"></td>
+            <td><input type="number" class="form-control" value="${item.current_price || ''}" data-field="current_price" step="any" style="width:90px;"></td>
+            <td><input type="number" class="form-control" value="${item.market_value || 0}" data-field="market_value" step="any" style="width:100px;"></td>
+            <td class="font-mono ${plClass}">${plVal >= 0 ? '+' : ''}${Number(plVal).toFixed(0)}</td>
+            <td>${layerSelect}</td>
+        `;
+        tr.dataset.index = idx;
+        resultsBody.appendChild(tr);
+    });
+}
+
+function toggleAllRows(masterCheckbox) {
+    document.querySelectorAll('.row-check').forEach(cb => cb.checked = masterCheckbox.checked);
+}
+
+function confirmAll() {
+    const rows = resultsBody.querySelectorAll('tr');
+    const items = [];
+
+    rows.forEach(row => {
+        const checked = row.querySelector('.row-check').checked;
+        if (!checked) return;
+
+        const item = {};
+        row.querySelectorAll('[data-field]').forEach(el => {
+            const field = el.dataset.field;
+            if (el.tagName === 'SELECT') {
+                item[field] = el.value;
+            } else if (el.type === 'number') {
+                item[field] = el.value ? parseFloat(el.value) : null;
+            } else {
+                item[field] = el.value;
+            }
+        });
+        items.push(item);
+    });
+
+    if (items.length === 0) {
+        showToast('请至少选择一项', 'error');
+        return;
+    }
+
+    fetch('{% url "assets:api_confirm_upload" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({
+            upload_id: currentUploadId,
+            platform: document.getElementById('detectedPlatform').value,
+            items: items,
+        }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast(`已成功录入 ${data.created} 项持仓`, 'success');
+            setTimeout(() => window.location.href = '{% url "assets:holdings" %}', 1000);
+        } else {
+            showToast('录入失败: ' + data.error, 'error');
+        }
+    });
+}
+
+function clearResults() {
+    resultsCard.classList.add('hidden');
+    resultsBody.innerHTML = '';
+    recognizedItems = [];
+    currentUploadId = null;
+}
+</script>
+{% endblock %}

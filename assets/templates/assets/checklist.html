@@ -1,0 +1,160 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}定期检视{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>定期检视清单</h2>
+    <p>基于《资产配置方案》的周/月/季/年度检视项目</p>
+</div>
+
+<!-- Tabs -->
+<div class="tabs" id="checklistTabs">
+    <button class="tab active" data-tab="weekly" onclick="switchTab('weekly')">📅 周检视</button>
+    <button class="tab" data-tab="monthly" onclick="switchTab('monthly')">📆 月检视</button>
+    <button class="tab" data-tab="quarterly" onclick="switchTab('quarterly')">📊 季度检视</button>
+    <button class="tab" data-tab="yearly" onclick="switchTab('yearly')">📋 年度大检</button>
+</div>
+
+{% for key, checklist in checklists.items %}
+<div class="tab-content {% if key == 'weekly' %}active{% endif %}" id="tab-{{ key }}">
+    <div class="card animate-in">
+        <div class="card-header flex-between">
+            <div>
+                <h3>{{ checklist.name }}</h3>
+                <span class="text-sm text-muted">{{ checklist.period }}</span>
+            </div>
+            <div class="flex-center gap-2">
+                {% if last_records|dictsort:"0" %}
+                    {% for period, record in last_records.items %}
+                        {% if period == key and record %}
+                            <span class="text-sm text-muted">上次完成：{{ record.completed_at|date:"Y-m-d H:i" }}</span>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+                <button class="btn btn-primary btn-sm" onclick="completeChecklist('{{ key }}')">✅ 标记完成</button>
+            </div>
+        </div>
+        <div class="card-body">
+            {% for item in checklist.items %}
+            <div class="checklist-item" id="checklist-{{ key }}-{{ forloop.counter0 }}">
+                <input type="checkbox" class="checklist-checkbox" data-period="{{ key }}" data-index="{{ forloop.counter0 }}"
+                    onchange="toggleCheckItem(this)">
+                <span class="checklist-text">{{ item }}</span>
+            </div>
+            {% endfor %}
+
+            <div class="mt-2">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-{{ key }}" style="width: 0%;"></div>
+                </div>
+                <div class="text-sm text-muted mt-1" id="progress-text-{{ key }}">0 / {{ checklist.items|length }} 已完成</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+<!-- Completion History -->
+<div class="card mt-3 animate-in stagger-1">
+    <div class="card-header">
+        <h3>📋 检视历史</h3>
+    </div>
+    <div class="card-body">
+        {% with all_records=last_records.values %}
+        {% if all_records %}
+        <table>
+            <thead>
+                <tr>
+                    <th>类型</th>
+                    <th>完成时间</th>
+                    <th>完成项数</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for period, record in last_records.items %}
+                    {% if record %}
+                    <tr>
+                        <td><span class="badge badge-neutral">{{ record.get_period_type_display }}</span></td>
+                        <td>{{ record.completed_at|date:"Y-m-d H:i" }}</td>
+                        <td>{{ record.completed_items|length }} / {{ record.total_items }}</td>
+                    </tr>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-text">暂无检视记录</div>
+            <div class="empty-state-hint">完成检视清单后会自动记录</div>
+        </div>
+        {% endif %}
+        {% endwith %}
+    </div>
+</div>
+
+<script>
+const checklistData = {};
+{% for key, checklist in checklists.items %}
+checklistData['{{ key }}'] = { total: {{ checklist.items|length }}, checked: 0 };
+{% endfor %}
+
+function switchTab(tabKey) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector(`[data-tab="${tabKey}"]`).classList.add('active');
+    document.getElementById(`tab-${tabKey}`).classList.add('active');
+}
+
+function toggleCheckItem(checkbox) {
+    const period = checkbox.dataset.period;
+    const item = checkbox.closest('.checklist-item');
+    
+    if (checkbox.checked) {
+        item.classList.add('checked');
+        checklistData[period].checked++;
+    } else {
+        item.classList.remove('checked');
+        checklistData[period].checked--;
+    }
+
+    updateProgress(period);
+}
+
+function updateProgress(period) {
+    const data = checklistData[period];
+    const pct = (data.checked / data.total * 100).toFixed(0);
+    document.getElementById(`progress-${period}`).style.width = pct + '%';
+    document.getElementById(`progress-text-${period}`).textContent = `${data.checked} / ${data.total} 已完成`;
+}
+
+function completeChecklist(period) {
+    const checkboxes = document.querySelectorAll(`input[data-period="${period}"]`);
+    const completedItems = [];
+    checkboxes.forEach((cb, i) => {
+        if (cb.checked) completedItems.push(i);
+    });
+
+    fetch('{% url "assets:api_checklist_complete" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({
+            period_type: period,
+            completed_items: completedItems,
+            total_items: checklistData[period].total,
+        }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast('检视记录已保存', 'success');
+        } else {
+            showToast('保存失败', 'error');
+        }
+    });
+}
+</script>
+{% endblock %}

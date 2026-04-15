@@ -1,0 +1,67 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}BigBill{% endblock %} · 个人资产管理</title>
+    <meta name="description" content="BigBill 个人资产管理系统 — 资产配置、再平衡、持仓跟踪">
+    <link rel="stylesheet" href="{% static 'assets/css/style.css' %}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <h1>💰 BigBill</h1>
+                <p>个人资产管理系统</p>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="{% url 'assets:dashboard' %}" class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+                    <span class="nav-icon">📊</span>
+                    <span>仪表盘</span>
+                </a>
+                <a href="{% url 'assets:holdings' %}" class="nav-item {% if request.resolver_match.url_name == 'holdings' %}active{% endif %}">
+                    <span class="nav-icon">💼</span>
+                    <span>资产管理</span>
+                </a>
+                <a href="{% url 'assets:upload' %}" class="nav-item {% if request.resolver_match.url_name == 'upload' %}active{% endif %}">
+                    <span class="nav-icon">📷</span>
+                    <span>截图识别</span>
+                </a>
+                <a href="{% url 'assets:rebalance' %}" class="nav-item {% if request.resolver_match.url_name == 'rebalance' %}active{% endif %}">
+                    <span class="nav-icon">⚖️</span>
+                    <span>再平衡</span>
+                </a>
+                <a href="{% url 'assets:history' %}" class="nav-item {% if request.resolver_match.url_name == 'history' %}active{% endif %}">
+                    <span class="nav-icon">📈</span>
+                    <span>历史记录</span>
+                </a>
+                <a href="{% url 'assets:checklist' %}" class="nav-item {% if request.resolver_match.url_name == 'checklist' %}active{% endif %}">
+                    <span class="nav-icon">✅</span>
+                    <span>定期检视</span>
+                </a>
+                <a href="{% url 'assets:settings' %}" class="nav-item {% if request.resolver_match.url_name == 'settings' %}active{% endif %}">
+                    <span class="nav-icon">⚙️</span>
+                    <span>设置</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Mobile Toggle -->
+    <button class="mobile-toggle" id="mobileToggle" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+
+    <script src="{% static 'assets/js/app.js' %}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

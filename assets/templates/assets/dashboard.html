@@ -1,0 +1,232 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}仪表盘{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>资产总览</h2>
+        <p>实时掌握您的财富配置状况</p>
+    </div>
+    <div class="btn-group">
+        <button class="btn btn-secondary" onclick="createSnapshot()">📸 记录快照</button>
+        <a href="{% url 'assets:upload' %}" class="btn btn-primary">📷 上传截图</a>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="stats-grid animate-in">
+    <div class="stat-card">
+        <div class="stat-label">总资产</div>
+        <div class="stat-value big-value" data-count="{{ total_value }}">
+            ¥{{ total_value|floatformat:0 }}
+        </div>
+        <div class="stat-sub">{{ holdings_count }} 项持仓</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">总盈亏</div>
+        <div class="stat-value {% if total_profit >= 0 %}positive{% else %}negative{% endif %}">
+            {% if total_profit >= 0 %}+{% endif %}¥{{ total_profit|floatformat:0 }}
+        </div>
+        <div class="stat-sub">
+            收益率 {% if total_profit_pct >= 0 %}+{% endif %}{{ total_profit_pct|floatformat:2 }}%
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">风险资产占比</div>
+        <div class="stat-value">
+            {% widthratio total_value 1 1 as tv %}
+            {% for ld in layers_data %}
+                {% if ld.order == 3 or ld.order == 4 or ld.order == 5 %}
+                    {% comment %}Risk layers{% endcomment %}
+                {% endif %}
+            {% endfor %}
+            —
+        </div>
+        <div class="stat-sub">第三~五层合计</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">偏差预警</div>
+        <div class="stat-value {% if alerts %}text-warning{% else %}text-success{% endif %}">
+            {{ alerts|length }}
+        </div>
+        <div class="stat-sub">{% if alerts %}个层级超过5%偏差{% else %}配置均在正常范围{% endif %}</div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid-2 mb-3 animate-in stagger-1">
+    <!-- Allocation Donut -->
+    <div class="card">
+        <div class="card-header">
+            <h3>📊 配置比例</h3>
+            <span class="text-sm text-muted">内环=目标 · 外环=实际</span>
+        </div>
+        <div class="card-body">
+            <div class="chart-container" style="max-height: 320px; display: flex; justify-content: center;">
+                <canvas id="allocationChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Deviation Analysis -->
+    <div class="card">
+        <div class="card-header">
+            <h3>⚖️ 偏差分析</h3>
+            <a href="{% url 'assets:rebalance' %}" class="btn btn-sm btn-secondary">查看详情 →</a>
+        </div>
+        <div class="card-body">
+            {% for ld in layers_data %}
+            <div class="deviation-bar">
+                <div class="deviation-label">{{ ld.name }}</div>
+                <div class="deviation-track">
+                    <div class="deviation-fill-target" style="width: {{ ld.target_ratio }}%; background: {{ ld.color }};"></div>
+                    <div class="deviation-fill-actual" style="width: {{ ld.actual_ratio }}%; background: {{ ld.color }};"></div>
+                </div>
+                <div class="deviation-value {% if ld.deviation > 5 or ld.deviation < -5 %}text-danger{% elif ld.deviation > 3 or ld.deviation < -3 %}text-warning{% else %}text-success{% endif %}">
+                    {% if ld.deviation >= 0 %}+{% endif %}{{ ld.deviation }}%
+                </div>
+            </div>
+            {% endfor %}
+
+            {% if alerts %}
+            <div class="mt-2">
+                {% for alert in alerts %}
+                <div class="alert alert-warning">
+                    ⚠️ {{ alert.name }}偏差{{ alert.deviation }}%，建议调整
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Recent Transactions -->
+<div class="card animate-in stagger-2">
+    <div class="card-header">
+        <h3>📝 最近操作</h3>
+        <a href="{% url 'assets:history' %}" class="btn btn-sm btn-secondary">查看全部 →</a>
+    </div>
+    <div class="card-body">
+        {% if recent_transactions %}
+        <table>
+            <thead>
+                <tr>
+                    <th>日期</th>
+                    <th>操作</th>
+                    <th>资产</th>
+                    <th class="text-right">金额</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tx in recent_transactions %}
+                <tr>
+                    <td class="text-muted">{{ tx.date }}</td>
+                    <td><span class="badge {% if tx.action == 'buy' %}badge-success{% elif tx.action == 'sell' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span></td>
+                    <td>{{ tx.asset_name }}</td>
+                    <td class="text-right font-mono">¥{{ tx.amount|floatformat:0 }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">📝</div>
+            <div class="empty-state-text">暂无操作记录</div>
+            <div class="empty-state-hint">开始添加持仓或上传截图吧</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const layersData = {{ layers_json|safe }};
+    
+    if (layersData.length > 0) {
+        const ctx = document.getElementById('allocationChart').getContext('2d');
+        
+        const labels = layersData.map(l => l.name);
+        const targetData = layersData.map(l => l.target_ratio);
+        const actualData = layersData.map(l => l.actual_ratio);
+        const colors = layersData.map(l => l.color);
+        const colorsAlpha = colors.map(c => c + '88');
+
+        new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: '实际比例',
+                        data: actualData,
+                        backgroundColor: colors,
+                        borderColor: 'transparent',
+                        borderWidth: 2,
+                        weight: 2,
+                    },
+                    {
+                        label: '目标比例',
+                        data: targetData,
+                        backgroundColor: colorsAlpha,
+                        borderColor: 'transparent',
+                        borderWidth: 2,
+                        weight: 1,
+                    },
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                cutout: '40%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            color: '#94a3b8',
+                            padding: 16,
+                            font: { family: 'Inter', size: 12 },
+                            usePointStyle: true,
+                            pointStyleWidth: 10,
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                        titleFont: { family: 'Inter' },
+                        bodyFont: { family: 'Inter' },
+                        padding: 12,
+                        cornerRadius: 8,
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.dataset.label + ': ' + ctx.parsed.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+});
+
+function createSnapshot() {
+    fetch('{% url "assets:api_snapshot_create" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast('快照已创建，总资产 ¥' + Number(data.total_value).toLocaleString(), 'success');
+        } else {
+            showToast('创建失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => showToast('请求失败', 'error'));
+}
+</script>
+{% endblock %}

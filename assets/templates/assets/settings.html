@@ -1,0 +1,363 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}设置{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>系统设置</h2>
+    <p>配置 AI 模型、目标比例、数据导入导出</p>
+</div>
+
+<!-- LLM Provider Selection -->
+<div class="card mb-3 animate-in">
+    <div class="card-header">
+        <h3>🤖 AI 模型配置</h3>
+    </div>
+    <div class="card-body">
+        <p class="text-sm text-muted mb-2">选择用于截图识别的 AI 模型。支持本地大模型（Ollama、vLLM、LM Studio 等）和 Anthropic Claude API。</p>
+
+        <!-- Provider Selector -->
+        <div class="form-group">
+            <label class="form-label">模型提供商</label>
+            <div class="tabs" style="max-width: 400px;">
+                <button class="tab {% if llm_provider == 'openai_compatible' %}active{% endif %}" 
+                    data-provider="openai_compatible" onclick="switchProvider('openai_compatible')">
+                    🖥️ 本地模型
+                </button>
+                <button class="tab {% if llm_provider == 'anthropic' %}active{% endif %}" 
+                    data-provider="anthropic" onclick="switchProvider('anthropic')">
+                    ☁️ Anthropic
+                </button>
+            </div>
+        </div>
+
+        <!-- Local Model Config -->
+        <div id="localConfig" class="{% if llm_provider == 'anthropic' %}hidden{% endif %}" style="margin-top: 16px;">
+            <div class="alert alert-info mb-2">
+                💡 本地模型需要支持 OpenAI 兼容 API 和视觉（多模态）能力。推荐：Ollama + llava / minicpm-v / qwen2.5-vl 等
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">API 地址 *</label>
+                    <input type="text" class="form-control" id="localApiUrl" 
+                        value="{{ local_api_url }}"
+                        placeholder="如 http://localhost:11434/v1">
+                    <p class="text-xs text-muted mt-1">Ollama 默认: http://localhost:11434/v1 · LM Studio 默认: http://localhost:1234/v1</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">模型名称 *</label>
+                    <input type="text" class="form-control" id="localModel" 
+                        value="{{ local_model }}"
+                        placeholder="如 llava, minicpm-v, qwen2.5-vl">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">API Key（如需要）</label>
+                <input type="password" class="form-control" id="localApiKey" 
+                    placeholder="{% if has_local_key %}已配置: {{ masked_local_key }}{% else %}本地模型通常不需要 Key，留空即可{% endif %}"
+                    style="max-width: 400px;">
+                {% if has_local_key %}
+                <div class="badge badge-success mt-1">✓ 已配置</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Anthropic Config -->
+        <div id="anthropicConfig" class="{% if llm_provider != 'anthropic' %}hidden{% endif %}" style="margin-top: 16px;">
+            <div class="form-group">
+                <label class="form-label">Anthropic API Key *</label>
+                <p class="text-sm text-muted mb-1">获取方式：<a href="https://console.anthropic.com/" target="_blank" style="color: var(--color-primary);">console.anthropic.com</a></p>
+                <input type="password" class="form-control" id="anthropicApiKey" 
+                    placeholder="{% if has_anthropic_key %}已配置: {{ masked_anthropic_key }}{% else %}sk-ant-...{% endif %}"
+                    style="max-width: 400px;">
+                {% if has_anthropic_key %}
+                <div class="badge badge-success mt-1">✓ 已配置</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="mt-2">
+            <button class="btn btn-primary" onclick="saveLLMConfig()">保存 AI 配置</button>
+            <button class="btn btn-secondary" onclick="testLLMConnection()" style="margin-left: 8px;">🔍 测试连接</button>
+        </div>
+    </div>
+</div>
+
+<!-- Target Ratios -->
+<div class="card mb-3 animate-in stagger-1">
+    <div class="card-header flex-between">
+        <h3>📊 目标配置比例</h3>
+        <button class="btn btn-primary btn-sm" onclick="saveRatios()">保存比例</button>
+    </div>
+    <div class="card-body">
+        <p class="text-sm text-muted mb-2">调整各层级的目标配置比例，总和必须等于 100%</p>
+
+        {% for layer in layers %}
+        <div class="flex-center gap-2 mb-2" style="padding: 12px 0; border-bottom: 1px solid var(--color-border);">
+            <div class="layer-dot" style="background: {{ layer.color }}; width: 12px; height: 12px;"></div>
+            <div style="width: 120px; font-weight: 600;">{{ layer.name }}</div>
+            <input type="range" class="range-slider flex-1" 
+                id="ratio-slider-{{ layer.id }}" 
+                min="0" max="50" step="0.5"
+                value="{{ layer.target_ratio }}"
+                data-layer-id="{{ layer.id }}"
+                oninput="updateRatioDisplay(this)">
+            <div style="width: 70px; text-align: right;">
+                <input type="number" class="form-control" 
+                    id="ratio-input-{{ layer.id }}"
+                    value="{{ layer.target_ratio }}"
+                    step="0.5" min="0" max="100"
+                    style="width: 70px; text-align: center; padding: 4px 6px;"
+                    data-layer-id="{{ layer.id }}"
+                    oninput="updateSliderFromInput(this)">
+            </div>
+            <span class="text-muted">%</span>
+        </div>
+        {% endfor %}
+
+        <div class="flex-between mt-2" style="padding-top: 12px; border-top: 2px solid var(--color-border);">
+            <strong>总计</strong>
+            <div>
+                <span id="ratioTotal" class="font-mono" style="font-size: 1.1rem; font-weight: 700;">100</span>
+                <span class="text-muted">%</span>
+                <span id="ratioStatus" class="badge badge-success" style="margin-left: 8px;">✓</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Data Management -->
+<div class="card mb-3 animate-in stagger-2">
+    <div class="card-header">
+        <h3>💾 数据管理</h3>
+    </div>
+    <div class="card-body">
+        <div class="grid-2">
+            <div>
+                <h4 style="font-size: 0.9rem; margin-bottom: 8px;">导出数据</h4>
+                <p class="text-sm text-muted mb-2">将所有数据导出为 JSON 文件，用于备份或迁移</p>
+                <a href="{% url 'assets:api_export' %}" class="btn btn-secondary" download>📤 导出 JSON</a>
+            </div>
+            <div>
+                <h4 style="font-size: 0.9rem; margin-bottom: 8px;">导入数据</h4>
+                <p class="text-sm text-muted mb-2">从 JSON 文件恢复数据（不会清除现有数据）</p>
+                <input type="file" id="importFile" accept=".json" style="display:none;" onchange="importData(this)">
+                <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">📥 导入 JSON</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- About -->
+<div class="card animate-in stagger-3">
+    <div class="card-header">
+        <h3>ℹ️ 关于</h3>
+    </div>
+    <div class="card-body">
+        <table>
+            <tr><td class="text-muted" style="width: 120px;">应用名称</td><td>BigBill 个人资产管理系统</td></tr>
+            <tr><td class="text-muted">数据库</td><td>SQLite (本地存储)</td></tr>
+            <tr><td class="text-muted">数据库位置</td><td class="font-mono text-sm">db.sqlite3</td></tr>
+            <tr><td class="text-muted">配置文档</td><td>基于《资产配置方案》</td></tr>
+        </table>
+        <div class="alert alert-info mt-2">
+            💡 建议定期导出数据备份，数据库文件保存在项目根目录下的 db.sqlite3
+        </div>
+    </div>
+</div>
+
+<script>
+let currentProvider = '{{ llm_provider }}';
+
+function switchProvider(provider) {
+    currentProvider = provider;
+    // Update tabs
+    document.querySelectorAll('.tab[data-provider]').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-provider="${provider}"]`).classList.add('active');
+    // Toggle config panels
+    document.getElementById('localConfig').classList.toggle('hidden', provider !== 'openai_compatible');
+    document.getElementById('anthropicConfig').classList.toggle('hidden', provider !== 'anthropic');
+}
+
+function saveLLMConfig() {
+    const data = { llm_provider: currentProvider };
+
+    if (currentProvider === 'anthropic') {
+        const key = document.getElementById('anthropicApiKey').value;
+        if (key) data.anthropic_api_key = key;
+    } else {
+        const url = document.getElementById('localApiUrl').value;
+        const model = document.getElementById('localModel').value;
+        const key = document.getElementById('localApiKey').value;
+        
+        if (!url) {
+            showToast('请输入 API 地址', 'error');
+            return;
+        }
+        if (!model) {
+            showToast('请输入模型名称', 'error');
+            return;
+        }
+        
+        data.local_api_url = url;
+        data.local_model = model;
+        if (key) data.local_api_key = key;
+    }
+
+    fetch('{% url "assets:api_settings_save" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            showToast('AI 配置已保存', 'success');
+            setTimeout(() => location.reload(), 800);
+        } else {
+            showToast('保存失败: ' + result.error, 'error');
+        }
+    });
+}
+
+function testLLMConnection() {
+    showToast('正在测试连接...', 'info');
+
+    const data = { provider: currentProvider };
+
+    if (currentProvider === 'openai_compatible') {
+        data.api_url = document.getElementById('localApiUrl').value;
+        data.api_key = document.getElementById('localApiKey').value;
+        if (!data.api_url) {
+            showToast('请先输入 API 地址', 'error');
+            return;
+        }
+    } else {
+        data.api_key = document.getElementById('anthropicApiKey').value;
+        if (!data.api_key) {
+            showToast('请先输入 API Key', 'error');
+            return;
+        }
+    }
+
+    fetch('{% url "assets:api_test_llm" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            showToast('✅ ' + result.message, 'success');
+        } else {
+            showToast('❌ ' + result.error, 'error');
+        }
+    })
+    .catch(e => showToast('请求失败: ' + e.message, 'error'));
+}
+
+function updateRatioDisplay(slider) {
+    const layerId = slider.dataset.layerId;
+    document.getElementById('ratio-input-' + layerId).value = slider.value;
+    recalcTotal();
+}
+
+function updateSliderFromInput(input) {
+    const layerId = input.dataset.layerId;
+    document.getElementById('ratio-slider-' + layerId).value = input.value;
+    recalcTotal();
+}
+
+function recalcTotal() {
+    let total = 0;
+    document.querySelectorAll('[id^="ratio-input-"]').forEach(input => {
+        total += parseFloat(input.value) || 0;
+    });
+    
+    const totalEl = document.getElementById('ratioTotal');
+    const statusEl = document.getElementById('ratioStatus');
+    totalEl.textContent = total.toFixed(1);
+    
+    if (Math.abs(total - 100) < 0.01) {
+        totalEl.style.color = 'var(--color-success)';
+        statusEl.className = 'badge badge-success';
+        statusEl.textContent = '✓';
+    } else {
+        totalEl.style.color = 'var(--color-danger)';
+        statusEl.className = 'badge badge-danger';
+        statusEl.textContent = total > 100 ? '超出' : '不足';
+    }
+}
+
+function saveRatios() {
+    const layers = [];
+    document.querySelectorAll('[id^="ratio-input-"]').forEach(input => {
+        layers.push({
+            id: parseInt(input.dataset.layerId),
+            target_ratio: parseFloat(input.value),
+        });
+    });
+
+    const total = layers.reduce((s, l) => s + l.target_ratio, 0);
+    if (Math.abs(total - 100) > 0.1) {
+        showToast('目标比例总和必须等于 100%', 'error');
+        return;
+    }
+
+    fetch('{% url "assets:api_settings_save" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({ layers: layers }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) showToast('比例已保存', 'success');
+        else showToast('保存失败: ' + data.error, 'error');
+    });
+}
+
+function importData(fileInput) {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            fetch('{% url "assets:api_import" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: JSON.stringify(data),
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    showToast('数据导入成功', 'success');
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    showToast('导入失败: ' + result.error, 'error');
+                }
+            });
+        } catch(err) {
+            showToast('JSON 文件格式错误', 'error');
+        }
+    };
+    reader.readAsText(file);
+}
+
+// Init total on load
+recalcTotal();
+</script>
+{% endblock %}
