@@ -76,6 +76,14 @@
             </div>
         </div>
 
+        <div class="form-group mt-2" style="border-top: 1px solid var(--color-border); padding-top: 16px;">
+            <label class="form-label">最大输出 Token 数 (max_tokens)</label>
+            <input type="number" class="form-control" id="llmMaxTokens" 
+                value="{{ llm_max_tokens|default:'2048' }}"
+                style="max-width: 150px;">
+            <p class="text-xs text-muted mt-1">控制 AI 返回内容的长短上限。若本地小模型经常“说到一半截断失败”，可调低此值以适配模型（例如 1024 或 2048）。</p>
+        </div>
+
         <div class="mt-2">
             <button class="btn btn-primary" onclick="saveLLMConfig()">保存 AI 配置</button>
             <button class="btn btn-secondary" onclick="testLLMConnection()" style="margin-left: 8px;">🔍 测试连接</button>
@@ -202,6 +210,11 @@ function saveLLMConfig() {
         data.local_api_url = url;
         data.local_model = model;
         if (key) data.local_api_key = key;
+    }
+
+    const maxTokens = document.getElementById('llmMaxTokens').value;
+    if (maxTokens) {
+        data.llm_max_tokens = maxTokens;
     }
 
     fetch('{% url "assets:api_settings_save" %}', {

@@ -263,6 +263,8 @@ def settings_page(request):
             return ''
         return key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
 
+    llm_max_tokens = Setting.get('llm_max_tokens', '2048')
+
     context = {
         'layers': layers,
         'llm_provider': provider,
@@ -272,6 +274,7 @@ def settings_page(request):
         'has_local_key': bool(local_api_key),
         'masked_local_key': mask_key(local_api_key),
         'local_model': local_model,
+        'llm_max_tokens': llm_max_tokens,
     }
     return render(request, 'assets/settings.html', context)
 
@@ -412,12 +415,14 @@ def api_upload_screenshot(request):
 
         # 获取保存后的文件路径
         image_path = os.path.join(django_settings.MEDIA_ROOT, upload.image.name)
+        llm_max_tokens = int(Setting.get('llm_max_tokens', '2048'))
 
         result = recognize_screenshot(
             image_path, api_key,
             provider=provider,
             api_url=api_url,
             model=model,
+            max_tokens=llm_max_tokens,
         )
 
         if result['success']:
@@ -618,6 +623,9 @@ def api_settings_save(request):
             Setting.set('local_api_key', data['local_api_key'])
         if 'local_model' in data:
             Setting.set('local_model', data['local_model'])
+            
+        if 'llm_max_tokens' in data:
+            Setting.set('llm_max_tokens', str(data['llm_max_tokens']))
 
         # 兼容旧字段
         if 'api_key' in data:

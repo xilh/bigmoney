@@ -68,10 +68,10 @@ RECOGNITION_PROMPT = """你是一个专业的金融数据提取助手。请仔�
 请返回纯 JSON 对象："""
 
 
-def _read_image(image_path: str, max_dimension: int = 1280):
+def _read_image(image_path: str, max_dimension: int = 800):
     """
     读取图片文件，压缩后返回 base64 编码和 MIME 类型。
-    iPhone 截图通常 1170×2532，压缩到 max_dimension 可大幅加速 LLM 处理。
+    iPhone 截图通常 1170×2532，在此压缩到 800 左右可以把耗时减半。
     """
     from io import BytesIO
     from PIL import Image
@@ -99,7 +99,7 @@ def _read_image(image_path: str, max_dimension: int = 1280):
 
     # 编码为 JPEG（体积远小于 PNG，且对文字识别足够）
     buffer = BytesIO()
-    img.save(buffer, format='JPEG', quality=85, optimize=True)
+    img.save(buffer, format='JPEG', quality=75, optimize=True)
     image_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
     media_type = 'image/jpeg'
 
@@ -241,12 +241,12 @@ def _repair_truncated_json(text: str) -> list:
     return None
 
 
-def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str) -> str:
+def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str, max_tokens: int = 2048) -> str:
     """调用 Anthropic Claude API"""
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
         model=model,
-        max_tokens=16384,
+        max_tokens=max_tokens,
         messages=[
             {
                 "role": "user",
@@ -271,7 +271,7 @@ def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str) 
 
 
 def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
-                            api_url: str, model: str) -> str:
+                            api_url: str, model: str, max_tokens: int = 2048) -> str:
     """
     调用 OpenAI 兼容 API（支持 Ollama、vLLM、LM Studio、OpenAI 等）
     使用 OpenAI Chat Completions 格式，图片通过 base64 data URL 传递
@@ -294,7 +294,7 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
 
     payload = {
         "model": model,
-        "max_tokens": 16384,
+        "max_tokens": max_tokens,
         "messages": [
             {
                 "role": "user",
@@ -329,7 +329,8 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
 def recognize_screenshot(image_path: str, api_key: str,
                          provider: str = 'anthropic',
                          api_url: str = '',
-                         model: str = '') -> dict:
+                         model: str = '',
+                         max_tokens: int = 2048) -> dict:
     """
     识别持仓截图
 
@@ -339,6 +340,7 @@ def recognize_screenshot(image_path: str, api_key: str,
         provider: 'anthropic' 或 'openai_compatible'（本地大模型/OpenAI 等）
         api_url: OpenAI 兼容 API 的 Base URL（仅 openai_compatible 需要）
         model: 模型名称
+        max_tokens: 大模型返回的最大限制
 
     Returns:
         dict: {"success": bool, "data": list, "platform": str, "error": str}
@@ -354,12 +356,14 @@ def recognize_screenshot(image_path: str, api_key: str,
         if provider == 'anthropic':
             response_text = _call_anthropic(
                 image_data, media_type, api_key,
-                model or 'claude-sonnet-4-20250514'
+                model or 'claude-sonnet-4-20250514',
+                max_tokens=max_tokens
             )
         else:
             response_text = _call_openai_compatible(
                 image_data, media_type, api_key,
-                api_url, model or 'gpt-4o'
+                api_url, model or 'gpt-4o',
+                max_tokens=max_tokens
             )
 
         result = _extract_json(response_text)
