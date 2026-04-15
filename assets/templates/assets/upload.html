@@ -26,24 +26,27 @@
     </div>
 </div>
 
+<!-- Upload Logs -->
+<div id="uploadLogs" class="mb-3"></div>
+
 <!-- Processing Status -->
 <div class="card mb-3 hidden" id="processingCard">
     <div class="card-header">
-        <h3>🔄 识别中...</h3>
+        <h3 id="processingTitle">🔄 识别中...</h3>
     </div>
     <div class="card-body text-center" style="padding: 40px;">
         <div class="loading-spinner" style="width: 40px; height: 40px; border-width: 3px;"></div>
-        <p class="mt-2 text-muted">正在使用 AI 分析截图内容，请稍候...</p>
+        <p class="mt-2 text-muted" id="processingStatus">正在使用 AI 分析截图内容，请稍候...</p>
     </div>
 </div>
 
 <!-- Recognition Results -->
 <div class="card mb-3 hidden" id="resultsCard">
     <div class="card-header flex-between">
-        <h3>✅ 识别结果</h3>
+        <h3 id="resultCardTitle">✅ 识别结果</h3>
         <div class="btn-group">
-            <button class="btn btn-secondary btn-sm" onclick="clearResults()">清除</button>
-            <button class="btn btn-primary btn-sm" onclick="confirmAll()">全部确认并录入</button>
+            <button class="btn btn-secondary btn-sm" onclick="skipCurrent()">跳过本张</button>
+            <button class="btn btn-primary btn-sm" onclick="confirmCurrent()">确认本张并继续</button>
         </div>
     </div>
     <div class="card-body">
@@ -123,8 +126,12 @@ const processingCard = document.getElementById('processingCard');
 const resultsCard = document.getElementById('resultsCard');
 const resultsBody = document.getElementById('resultsBody');
 
+let currentFile = null;
 let currentUploadId = null;
-let recognizedItems = [];
+let isUploading = false;
+let fileQueue = [];
+let pendingConfirmations = [];
+let processedLogHTML = "";
 
 // Layer options for select
 const layerOptions = [
@@ -153,46 +160,119 @@ uploadZone.addEventListener('drop', (e) => {
 });
 fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
 
+function addLog(message, type='info') {
+    const logsDiv = document.getElementById('uploadLogs');
+    const color = type === 'error' ? 'red' : (type === 'success' ? 'green' : 'gray');
+    const bg = type === 'error' ? '#fee2e2' : (type === 'success' ? '#dcfce7' : '#f3f4f6');
+    processedLogHTML += `<div style="padding: 8px 12px; margin-bottom: 8px; border-radius: 6px; background: ${bg}; color: ${color}; font-size: 0.9em;">${message}</div>`;
+    logsDiv.innerHTML = processedLogHTML;
+}
+
 function handleFiles(files) {
+    const imageFiles = [];
     for (const file of files) {
         if (!file.type.startsWith('image/')) {
-            showToast('请上传图片文件', 'error');
+            addLog(`❌ 已忽略文件 ${file.name} (非图片格式)`, 'error');
             continue;
         }
-        uploadFile(file);
+        imageFiles.push(file);
+    }
+    if (imageFiles.length === 0) return;
+
+    // 加入队列
+    fileQueue.push(...imageFiles);
+
+    if (!isUploading) {
+        startUploadQueue();
     }
 }
 
-function uploadFile(file) {
-    processingCard.classList.remove('hidden');
+async function startUploadQueue() {
+    isUploading = true;
+    const totalToProcess = fileQueue.length;
+    let initialCount = 0;
+
     resultsCard.classList.add('hidden');
+    processingCard.classList.remove('hidden');
 
-    const formData = new FormData();
-    formData.append('image', file);
+    while (fileQueue.length > 0) {
+        const file = fileQueue.shift();
+        initialCount++;
+        const remaining = fileQueue.length;
 
-    fetch('{% url "assets:api_upload" %}', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
-        body: formData,
-    })
-    .then(r => r.json())
-    .then(data => {
-        processingCard.classList.add('hidden');
-        if (data.success) {
-            currentUploadId = data.upload_id;
-            recognizedItems = data.data;
-            // 设置 AI 识别的平台
-            document.getElementById('detectedPlatform').value = data.platform || '';
-            renderResults(data.data);
-            const platformMsg = data.platform ? `（来源: ${data.platform}）` : '';
-            showToast(`识别成功，发现 ${data.data.length} 项持仓${platformMsg}`, 'success');
-        } else {
-            showToast('识别失败: ' + data.error, 'error');
+        document.getElementById('processingTitle').textContent = `🔄 正在提交给 AI 识别...`;
+        document.getElementById('processingStatus').textContent = `正在分析截图 (${initialCount}/${totalToProcess})：${file.name}，请耐心等待`;
+
+        try {
+            const result = await uploadFile(file);
+            
+            if (result.success && result.data.length > 0) {
+                pendingConfirmations.push({
+                    file: file,
+                    upload_id: result.upload_id,
+                    platform: result.platform || '',
+                    data: result.data
+                });
+                addLog(`⏳ 图片 ${file.name} 识别成功，等待复核`);
+            } else if (result.success && result.data.length === 0) {
+                addLog(`⚠️ 图片 ${file.name} 未识别到任何资产`, 'error');
+            } else {
+                addLog(`❌ 图片 ${file.name} 识别失败: ${result.error}`, 'error');
+            }
+        } catch (e) {
+            addLog(`❌ 图片 ${file.name} 上传失败: ${e.message}`, 'error');
         }
-    })
-    .catch(e => {
-        processingCard.classList.add('hidden');
-        showToast('上传失败: ' + e.message, 'error');
+    }
+
+    // All LLM processing is done
+    processingCard.classList.add('hidden');
+    isUploading = false;
+
+    if (pendingConfirmations.length > 0) {
+        showToast('AI 识别完毕！请依次确认结果', 'success');
+        showNextConfirmation();
+    } else {
+        showToast('处理完毕，没有需要录入的数据', 'info');
+    }
+}
+
+function showNextConfirmation() {
+    if (pendingConfirmations.length === 0) {
+        resultsCard.classList.add('hidden');
+        showToast('所有图片均已处理完毕！', 'success');
+        return;
+    }
+
+    const currentItem = pendingConfirmations[0];
+    currentFile = currentItem.file;
+    currentUploadId = currentItem.upload_id;
+
+    document.getElementById('detectedPlatform').value = currentItem.platform;
+    document.getElementById('resultCardTitle').textContent = `✅ 识别结果 - ${currentFile.name} (剩余 ${pendingConfirmations.length} 张待确认)`;
+    
+    renderResults(currentItem.data);
+    resultsCard.classList.remove('hidden');
+}
+
+function skipCurrent() {
+    addLog(`⏭️ 已跳过图片 ${currentFile.name}`);
+    pendingConfirmations.shift(); // Remove from queue
+    showNextConfirmation();
+}
+
+function uploadFile(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('image', file);
+
+        fetch('{% url "assets:api_upload" %}', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+            body: formData,
+        })
+        .then(r => r.json())
+        .then(data => resolve(data))
+        .catch(e => reject(e));
     });
 }
 
@@ -222,20 +302,30 @@ function renderResults(items) {
 
         const plVal = item.profit_loss || 0;
         const plClass = plVal >= 0 ? 'positive' : 'negative';
+        const platformTag = item._platform ? `<span class="text-xs text-muted">${item._platform}</span>` : '';
 
         tr.innerHTML = `
             <td><input type="checkbox" checked class="row-check"></td>
-            <td><input type="text" class="form-control" value="${item.name || ''}" data-field="name" style="min-width:140px;"></td>
+            <td>
+                <input type="text" class="form-control" value="${item.name || ''}" data-field="name" style="min-width:140px;">
+                ${platformTag}
+            </td>
             <td><input type="text" class="form-control" value="${item.code || ''}" data-field="code" style="width:80px;"></td>
             <td>${typeSelect}</td>
             <td><input type="number" class="form-control" value="${item.quantity || 0}" data-field="quantity" step="any" style="width:90px;"></td>
             <td><input type="number" class="form-control" value="${item.cost_price || ''}" data-field="cost_price" step="any" style="width:90px;"></td>
             <td><input type="number" class="form-control" value="${item.current_price || ''}" data-field="current_price" step="any" style="width:90px;"></td>
             <td><input type="number" class="form-control" value="${item.market_value || 0}" data-field="market_value" step="any" style="width:100px;"></td>
-            <td class="font-mono ${plClass}">${plVal >= 0 ? '+' : ''}${Number(plVal).toFixed(0)}</td>
+            <td class="font-mono ${plClass}">
+                ${plVal > 0 ? '+' : ''}${Number(plVal).toFixed(2)}
+                <input type="hidden" data-field="profit_loss" value="${item.profit_loss || 0}">
+                <input type="hidden" data-field="profit_loss_pct" value="${item.profit_loss_pct || 0}">
+            </td>
             <td>${layerSelect}</td>
         `;
         tr.dataset.index = idx;
+        tr.dataset.uploadId = item._upload_id || '';
+        tr.dataset.platform = item._platform || '';
         resultsBody.appendChild(tr);
     });
 }
@@ -244,7 +334,7 @@ function toggleAllRows(masterCheckbox) {
     document.querySelectorAll('.row-check').forEach(cb => cb.checked = masterCheckbox.checked);
 }
 
-function confirmAll() {
+function confirmCurrent() {
     const rows = resultsBody.querySelectorAll('tr');
     const items = [];
 
@@ -257,12 +347,13 @@ function confirmAll() {
             const field = el.dataset.field;
             if (el.tagName === 'SELECT') {
                 item[field] = el.value;
-            } else if (el.type === 'number') {
+            } else if (el.type === 'number' || el.type === 'hidden') {
                 item[field] = el.value ? parseFloat(el.value) : null;
             } else {
                 item[field] = el.value;
             }
         });
+        item.platform = document.getElementById('detectedPlatform').value;
         items.push(item);
     });
 
@@ -270,6 +361,10 @@ function confirmAll() {
         showToast('请至少选择一项', 'error');
         return;
     }
+
+    const confirmBtn = document.querySelector('.btn-primary');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "录入中...";
 
     fetch('{% url "assets:api_confirm_upload" %}', {
         method: 'POST',
@@ -285,12 +380,21 @@ function confirmAll() {
     })
     .then(r => r.json())
     .then(data => {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "确认本张并继续";
+
         if (data.success) {
-            showToast(`已成功录入 ${data.created} 项持仓`, 'success');
-            setTimeout(() => window.location.href = '{% url "assets:holdings" %}', 1000);
+            addLog(`✅ 图片 ${currentFile.name} 成功录入 ${data.created} 项持仓`, 'success');
+            pendingConfirmations.shift(); // Remove from queue
+            showNextConfirmation();
         } else {
             showToast('录入失败: ' + data.error, 'error');
         }
+    })
+    .catch(e => {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "确认本张并继续";
+        showToast('网络错误: ' + e.message, 'error');
     });
 }
 
@@ -298,7 +402,9 @@ function clearResults() {
     resultsCard.classList.add('hidden');
     resultsBody.innerHTML = '';
     recognizedItems = [];
-    currentUploadId = null;
+    uploadIds = [];
+    detectedPlatforms = [];
+    document.getElementById('detectedPlatform').value = '';
 }
 </script>
 {% endblock %}

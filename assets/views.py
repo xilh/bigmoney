@@ -433,26 +433,56 @@ def api_confirm_upload(request):
             # 使用 item 级别的 platform，或全局 platform
             item_platform = item.get('platform', platform)
 
-            holding = Holding.objects.create(
-                layer=layer,
-                name=item['name'],
-                code=item.get('code', ''),
-                asset_type=item.get('asset_type', 'other'),
-                quantity=Decimal(str(item.get('quantity', 0))),
-                cost_price=Decimal(str(item['cost_price'])) if item.get('cost_price') else None,
-                current_price=Decimal(str(item['current_price'])) if item.get('current_price') else None,
-                market_value=Decimal(str(item.get('market_value', 0))),
-                profit_loss=Decimal(str(item.get('profit_loss', 0))),
-                profit_loss_pct=Decimal(str(item.get('profit_loss_pct', 0))),
-                source='screenshot',
-                platform=item_platform,
-            )
-            # Preserve market_value if directly set
+            # 查找同名且同平台的持仓，如果存在则更新
+            holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
+            
+            # 准备数据
+            code = item.get('code', '')
+            asset_type = item.get('asset_type', 'other')
+            quantity = Decimal(str(item.get('quantity', 0)))
+            cost_price = Decimal(str(item['cost_price'])) if item.get('cost_price') else None
+            current_price = Decimal(str(item['current_price'])) if item.get('current_price') else None
+            market_value = Decimal(str(item.get('market_value', 0)))
+            profit_loss = Decimal(str(item.get('profit_loss', 0)))
+            profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
+
+            if holding:
+                # 更新现有持仓
+                holding.layer = layer
+                if code:
+                    holding.code = code
+                holding.asset_type = asset_type
+                holding.quantity = quantity
+                holding.cost_price = cost_price
+                holding.current_price = current_price
+                holding.market_value = market_value
+                holding.profit_loss = profit_loss
+                holding.profit_loss_pct = profit_loss_pct
+                holding.source = 'screenshot'
+                holding.save()
+            else:
+                # 创建新持仓
+                holding = Holding.objects.create(
+                    layer=layer,
+                    name=item['name'],
+                    code=code,
+                    asset_type=asset_type,
+                    quantity=quantity,
+                    cost_price=cost_price,
+                    current_price=current_price,
+                    market_value=market_value,
+                    profit_loss=profit_loss,
+                    profit_loss_pct=profit_loss_pct,
+                    source='screenshot',
+                    platform=item_platform,
+                )
+
+            # Preserve exact screenshot values if missing prices (overrides recalculation if happened)
             if not holding.current_price and item.get('market_value'):
                 Holding.objects.filter(pk=holding.pk).update(
-                    market_value=Decimal(str(item['market_value'])),
-                    profit_loss=Decimal(str(item.get('profit_loss', 0))),
-                    profit_loss_pct=Decimal(str(item.get('profit_loss_pct', 0))),
+                    market_value=market_value,
+                    profit_loss=profit_loss,
+                    profit_loss_pct=profit_loss_pct,
                 )
 
             created_count += 1

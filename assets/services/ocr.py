@@ -116,36 +116,44 @@ def _extract_json(text: str) -> dict:
     """
     text = text.strip()
 
-    # 去掉 markdown 包裹
-    if text.startswith('```'):
-        lines = text.split('\n')
-        json_lines = []
-        in_json = False
-        for line in lines:
-            if line.startswith('```') and not in_json:
-                in_json = True
-                continue
-            elif line.startswith('```') and in_json:
-                break
-            elif in_json:
-                json_lines.append(line)
-        text = '\n'.join(json_lines)
+    import re
+    # 1. 尝试匹配 Markdown 代码块 (```json ... ```)
+    match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text, re.IGNORECASE)
+    if match:
+        json_text = match.group(1).strip()
+    else:
+        # 2. 如果没有代码块，找最外层的 {} 或 []
+        start_obj = text.find('{')
+        start_arr = text.find('[')
+        
+        start = -1
+        if start_obj != -1 and start_arr != -1:
+            start = min(start_obj, start_arr)
+        elif start_obj != -1:
+            start = start_obj
+        else:
+            start = start_arr
+            
+        if start != -1:
+            if text[start] == '{':
+                end = text.rfind('}')
+            else:
+                end = text.rfind(']')
+                
+            if end != -1 and end >= start:
+                json_text = text[start:end+1]
+            else:
+                json_text = text[start:]
+        else:
+            json_text = text
 
     # 尝试直接解析
-    parsed = _try_parse(text)
+    parsed = _try_parse(json_text)
     if parsed is not None:
         return _normalize_result(parsed)
 
-    # 找到 JSON 开始位置（{ 或 [）
-    for ch in ['{', '[']:
-        start = text.find(ch)
-        if start != -1:
-            parsed = _try_parse(text[start:])
-            if parsed is not None:
-                return _normalize_result(parsed)
-
     # JSON 可能被截断，尝试修复
-    repaired = _repair_truncated_json(text)
+    repaired = _repair_truncated_json(json_text)
     if repaired is not None:
         return _normalize_result(repaired)
 
