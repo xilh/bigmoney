@@ -22,3 +22,7 @@ media/
 
 # OS
 .DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
