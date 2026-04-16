@@ -32,9 +32,16 @@ def calculate_interval_performance(start_date_str, end_date_str):
         start_value = start_snapshot.total_value
         actual_start_dt = start_snapshot.date
     else:
-        # 如果 start_date 之前没有任何快照，说明账户此时完全是空的
-        start_value = Decimal('0')
-        actual_start_dt = timezone.make_aware(start_dt) if timezone.is_naive(start_dt) else start_dt
+        # 没有 start_date 之前的快照，回退到区间内最早的快照作为起点
+        first_snapshot = Snapshot.objects.filter(date__gt=start_dt, date__lte=end_dt).order_by('date', 'id').first()
+        if first_snapshot:
+            start_value = first_snapshot.total_value
+            actual_start_dt = first_snapshot.date
+        else:
+            # 整个区间内完全没有快照，无法计算
+            aware_start = timezone.make_aware(start_dt) if timezone.is_naive(start_dt) else start_dt
+            aware_end = timezone.make_aware(end_dt) if timezone.is_naive(end_dt) else end_dt
+            return _empty_result(aware_start, aware_end)
 
     # 2. 寻找期末快照
     end_snapshot = Snapshot.objects.filter(date__lte=end_dt).order_by('-date', '-id').first()
