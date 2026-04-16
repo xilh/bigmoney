@@ -54,7 +54,12 @@
         <div class="flex-center gap-2 mb-2" style="padding: 10px 14px; background: var(--color-surface); border-radius: 8px; border: 1px solid var(--color-border);">
             <span>📱</span>
             <span class="text-sm" style="white-space: nowrap;">来源平台：</span>
-            <input type="text" class="form-control" id="detectedPlatform" placeholder="如：招商银行、支付宝、天天基金..." style="max-width: 250px; font-size: 0.85rem;">
+            <input type="text" class="form-control" id="detectedPlatform" list="platformList" placeholder="如：招商银行、支付宝、天天基金..." style="max-width: 250px; font-size: 0.85rem;">
+            <datalist id="platformList">
+                {% for p in existing_platforms %}
+                <option value="{{ p }}">
+                {% endfor %}
+            </datalist>
             <span class="text-xs text-muted">（AI 自动识别，可修改）</span>
         </div>
         <div class="table-wrapper">

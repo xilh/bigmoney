@@ -130,11 +130,19 @@ def upload_page(request):
         has_api_config = bool(Setting.get('local_api_url'))
     layers = AssetLayer.objects.all()
 
+    existing_platforms = list(
+        Holding.objects.exclude(platform='')
+        .values_list('platform', flat=True)
+        .distinct()
+        .order_by('platform')
+    )
+
     context = {
         'uploads': uploads,
         'has_api_key': has_api_config,
         'layers': layers,
         'asset_type_choices': ASSET_TYPE_CHOICES,
+        'existing_platforms': existing_platforms,
     }
     return render(request, 'assets/upload.html', context)
 
