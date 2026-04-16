@@ -1,4 +1,4 @@
-# BigMoney 大钱 💰
+# BigMoney 变有钱 💰
 
 **A personal asset allocation tracker built on financial advice provided by Claude (Anthropic).**
 
@@ -46,7 +46,7 @@ This project is built on financial portfolio advice provided by [Claude](https:/
 
 ---
 
-# BigMoney 大钱 💰
+# BigMoney 变有钱 💰
 
 **基于 Claude (Anthropic) 提供的理财建议构建的个人资产配置追踪工具。**
 
