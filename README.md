@@ -1,52 +1,14 @@
-# BigMoney 变有钱 💰
+<h1 align="center">BigMoney 变有钱 💰</h1>
 
-**A personal asset allocation tracker built on financial advice provided by Claude (Anthropic).**
-
-The investment methodology — a five-layer portfolio structure (Safety Cushion / Bond Core / Equity Core / Alternative Hedge / Satellite Opportunities) — was designed with guidance from Claude AI. The application itself was also largely built with Claude Code.
-
-> **Disclaimer:** This tool is for personal tracking purposes only. It is NOT professional financial advice. The portfolio structure and rebalancing logic reflect AI-assisted suggestions and should be evaluated by a qualified financial advisor before use. Use at your own risk.
-
-## Features
-
-- **Five-Layer Portfolio Model** — structured asset allocation with target ratios and automatic deviation alerts
-- **Screenshot OCR** — upload brokerage/bank screenshots; AI extracts holdings automatically (supports Anthropic Claude API and OpenAI-compatible endpoints like Ollama)
-- **Rebalancing Engine** — deviation warnings (>3% caution, >5% critical), new fund allocation suggestions, and drawdown response protocols
-- **Performance Tracking** — Modified Dietz method for time-weighted interval return calculation
-- **Snapshot History** — point-in-time portfolio snapshots with layer composition charts
-- **Transaction Log** — buy/sell/transfer/withdraw records for cash flow tracking
-
-## Quick Start
-
-```bash
-# Install dependencies (requires uv)
-uv sync
-
-# Initialize database
-uv run python manage.py migrate
-
-# Seed the default 5-layer asset configuration
-uv run python manage.py shell < assets/seed_data.py
-
-# Run the server
-uv run python manage.py runserver
-```
-
-Then visit http://127.0.0.1:8000/ and configure your LLM provider in Settings.
-
-## Tech Stack
-
-- **Backend:** Django 6 / Python
-- **Database:** SQLite (single-user, no auth)
-- **Frontend:** Server-rendered Django templates, inline JS, no build step
-- **OCR:** Anthropic Claude API or any OpenAI-compatible endpoint
-
-## AI Attribution
-
-This project is built on financial portfolio advice provided by [Claude](https://claude.ai) (Anthropic). The five-layer investment framework, rebalancing thresholds, and drawdown response protocols were all designed through conversations with Claude. The codebase was developed with [Claude Code](https://claude.ai/code).
+<p align="center">
+  <a href="#zh-cn">简体中文</a> | <a href="#english">English</a>
+</p>
 
 ---
 
-# BigMoney 变有钱 💰
+<a id="zh-cn"></a>
+
+## 简体中文
 
 **基于 Claude (Anthropic) 提供的理财建议构建的个人资产配置追踪工具。**
 
@@ -54,7 +16,7 @@ This project is built on financial portfolio advice provided by [Claude](https:/
 
 > **免责声明：** 本工具仅供个人记录用途，不构成专业投资建议。资产配置体系与再平衡逻辑来源于 AI 辅助建议，使用前请咨询专业理财顾问。风险自负。
 
-## 功能特性
+### 功能特性
 
 - **五层资产配置模型** — 结构化资产分层，设定目标比例并自动偏差预警
 - **截图 OCR 识别** — 上传券商/银行持仓截图，AI 自动提取持仓信息（支持 Anthropic Claude API 及 Ollama 等 OpenAI 兼容接口）
@@ -63,7 +25,7 @@ This project is built on financial portfolio advice provided by [Claude](https:/
 - **快照历史** — 时间点资产快照，含层级构成演变图表
 - **交易日志** — 买入/卖出/注资/提现记录，用于现金流追踪
 
-## 快速开始
+### 快速开始
 
 ```bash
 # 安装依赖（需要 uv）
@@ -81,13 +43,67 @@ uv run python manage.py runserver
 
 访问 http://127.0.0.1:8000/，在设置页配置 LLM 服务商即可使用。
 
-## 技术栈
+### 技术栈
 
 - **后端：** Django 6 / Python
 - **数据库：** SQLite（单用户，无需认证）
 - **前端：** Django 模板渲染，内联 JS，无构建步骤
 - **OCR：** Anthropic Claude API 或任意 OpenAI 兼容接口
 
-## AI 声明
+### AI 声明
 
 本项目基于 [Claude](https://claude.ai) (Anthropic) 提供的理财投资建议构建。五层资产配置框架、再平衡阈值、回撤应对策略均通过与 Claude 的对话设计而成。代码由 [Claude Code](https://claude.ai/code) 开发。
+
+<p align="right"><a href="#zh-cn">⬆ 回到中文</a> | <a href="#english">English ⬇</a></p>
+
+---
+
+<a id="english"></a>
+
+## English
+
+**A personal asset allocation tracker built on financial advice provided by Claude (Anthropic).**
+
+The investment methodology — a five-layer portfolio structure (Safety Cushion / Bond Core / Equity Core / Alternative Hedge / Satellite Opportunities) — was designed with guidance from Claude AI. The application itself was also largely built with Claude Code.
+
+> **Disclaimer:** This tool is for personal tracking purposes only. It is NOT professional financial advice. The portfolio structure and rebalancing logic reflect AI-assisted suggestions and should be evaluated by a qualified financial advisor before use. Use at your own risk.
+
+### Features
+
+- **Five-Layer Portfolio Model** — structured asset allocation with target ratios and automatic deviation alerts
+- **Screenshot OCR** — upload brokerage/bank screenshots; AI extracts holdings automatically (supports Anthropic Claude API and OpenAI-compatible endpoints like Ollama)
+- **Rebalancing Engine** — deviation warnings (>3% caution, >5% critical), new fund allocation suggestions, and drawdown response protocols
+- **Performance Tracking** — Modified Dietz method for time-weighted interval return calculation
+- **Snapshot History** — point-in-time portfolio snapshots with layer composition charts
+- **Transaction Log** — buy/sell/transfer/withdraw records for cash flow tracking
+
+### Quick Start
+
+```bash
+# Install dependencies (requires uv)
+uv sync
+
+# Initialize database
+uv run python manage.py migrate
+
+# Seed the default 5-layer asset configuration
+uv run python manage.py shell < assets/seed_data.py
+
+# Run the server
+uv run python manage.py runserver
+```
+
+Then visit http://127.0.0.1:8000/ and configure your LLM provider in Settings.
+
+### Tech Stack
+
+- **Backend:** Django 6 / Python
+- **Database:** SQLite (single-user, no auth)
+- **Frontend:** Server-rendered Django templates, inline JS, no build step
+- **OCR:** Anthropic Claude API or any OpenAI-compatible endpoint
+
+### AI Attribution
+
+This project is built on financial portfolio advice provided by [Claude](https://claude.ai) (Anthropic). The five-layer investment framework, rebalancing thresholds, and drawdown response protocols were all designed through conversations with Claude. The codebase was developed with [Claude Code](https://claude.ai/code).
+
+<p align="right"><a href="#english">⬆ Back to English</a> | <a href="#zh-cn">简体中文 ⬆</a></p>
