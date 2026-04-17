@@ -521,8 +521,7 @@ def api_confirm_upload(request):
             profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
 
             if holding:
-                # 更新现有持仓
-                holding.layer = layer
+                # 更新现有持仓（保留用户已分配的层级）
                 if code:
                     holding.code = code
                 holding.asset_type = asset_type

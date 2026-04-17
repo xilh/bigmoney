@@ -13,68 +13,61 @@ import httpx
 
 
 # 识别提示词模板
-RECOGNITION_PROMPT = """你是一个专业的金融数据提取助手。请仔细分析这张持仓/理财截图，提取所有资产持仓信息。
+RECOGNITION_PROMPT = """你是一个专业的金融数据提取助手。请分析这张持仓/理财截图，提取所有资产持仓信息。
 
-首先，请根据截图的 UI 界面特征（App 图标、导航栏文字、配色风格、底部 Tab 等）判断这是哪个 App/平台的截图。
-⚠️ 平台判断规则（按优先级）：
-1. 优先从 UI 界面元素识别平台
-2. 如果 UI 无法确定，但截图中的产品组合与已有数据中某个平台的持仓高度吻合，可以推断为该平台
-3. 绝对不要从单个产品名称猜测平台（例如不能因为看到"招商白酒"就判断平台是"招商银行"）
-4. 如果以上方法都无法确定，platform 填空字符串
+## 已有数据（用于平台推断和产品名去重）
 
-请返回一个 JSON 对象，格式如下：
+$EXISTING_DATA_BLOCK$
+
+## 平台判断
+
+请判断截图来自哪个 App/平台：
+1. 从 UI 元素判断（App 图标、导航栏、配色、底部 Tab、状态栏标题等）
+2. 如果 UI 不明确，看截图中的产品是否大部分出现在上面已有数据的某个平台下 —— 如果是，使用该平台名
+3. 不要从单个产品名猜平台（如看到"招商白酒"不代表平台是"招商银行"）
+4. 以上都不确定时填空字符串
+
+## 去重匹配
+
+将识别到的产品名称与已有数据对比。如果高度相似（个别字差异、多/少空格、简称vs全称），直接使用已有数据中的名称。
+
+## 返回格式
+
+返回纯 JSON 对象（不要 markdown 代码块）：
 {
-  "platform": "识别出的App名称（如截图来源不确定则填空字符串）",
+  "platform": "平台名",
   "holdings": [
-    {每个持仓的信息}
+    {
+      "name": "资产名称",
+      "code": "代码（无则空字符串）",
+      "asset_type": "类型",
+      "quantity": 份额数字,
+      "cost_price": 成本价或null,
+      "current_price": 现价/净值或null,
+      "market_value": 市值,
+      "profit_loss": 累计盈亏,
+      "profit_loss_pct": 盈亏百分比,
+      "suggested_layer": 层级1-5
+    }
   ]
 }
 
-每个持仓包含以下字段：
-- name: 资产名称（如"华泰柏瑞沪深300ETF"、"长江电力"等）
-- code: 资产代码（如"510300"、"600900"等，如截图中没有则留空字符串）
-- asset_type: 资产类型，必须是以下之一：cash(现金), money_fund(货币基金), bank_product(银行理财), deposit(存款/大额存单), bond_fund(债券基金), convertible_bond(可转债基金), index_fund(指数基金), stock(股票), etf(ETF), dividend_stock(红利股), gold(黄金), qdii(QDII基金), hk_stock(港股), other(其他)
-- quantity: 数量/份额（数字，如截图中没有则为0）
-- cost_price: 成本价/买入均价（数字，如截图中没有则为null）
-- current_price: 当前价/最新净值（数字，如截图中没有则为null）
-- market_value: 市值/金额（数字，单位：元）
-- profit_loss: 累计盈亏金额（数字，单位：元）
-- profit_loss_pct: 盈亏比例（数字，百分比，如截图中没有则为0）
-- suggested_layer: 建议所属层级(1-5)，根据资产类型推断：
-  - 1: 安全垫层（现金、货币基金、银行理财R1-R2、大额存单）
-  - 2: 稳健收益/债券（中短债基金、纯债基金、可转债基金）
-  - 3: 股票核心（沪深300ETF、红利股、优质成长股、A股个股）
-  - 4: 另类/对冲（黄金ETF、港股、QDII基金）
-  - 5: 机会/卫星（行业ETF、主题投资、小盘股）
+asset_type 枚举：cash, money_fund, bank_product, deposit, bond_fund, convertible_bond, index_fund, stock, etf, dividend_stock, gold, qdii, hk_stock, other
 
-⚠️ 关键提取规则（请严格遵守）：
+suggested_layer 规则：1=安全垫（现金/货基/银行理财R1-R2/存单） 2=债券（中短债/纯债/可转债） 3=股票核心（沪深300/红利股/A股） 4=另类对冲（黄金/港股/QDII） 5=卫星机会（行业ETF/主题/小盘）
 
-1. 【字段映射】中国金融App中常见的字段名对应关系：
-   - "金额" / "持有金额" / "市值" / "最新市值" → market_value
-   - "持有收益" / "累计收益" / "浮动盈亏" / "持仓收益" / "持仓盈亏" → profit_loss（这是最关键的字段，务必提取！）
-   - "昨日收益" / "日收益" / "今日收益" → 忽略（这是单日收益，不是累计盈亏）
-   - "收益率" / "持有收益率" / "累计收益率" → profit_loss_pct
-   - "份额" / "持有份额" → quantity
-   - "净值" / "最新净值" / "单位净值" → current_price
-   - "成本" / "成本价" / "持仓成本" / "买入均价" → cost_price
+## 提取规则
 
-2. 【数字精度】请精确提取所有数字，包括小数部分，不要四舍五入。注意：
-   - 正数前有 "+" 号的（如 +4,842.63），profit_loss 为正值
-   - 负数前有 "-" 号的（如 -7,580.34），profit_loss 为负值
-   - 逗号是千分位分隔符，不是小数点
+字段映射：
+- "金额"/"持有金额"/"市值"/"最新市值" → market_value
+- "持有收益"/"累计收益"/"浮动盈亏"/"持仓盈亏" → profit_loss（必须提取！）
+- "昨日收益"/"日收益"/"今日收益" → 忽略（单日收益，非累计）
+- "收益率"/"持有收益率" → profit_loss_pct
+- "份额"/"持有份额" → quantity
+- "净值"/"最新净值" → current_price
+- "成本"/"成本价"/"买入均价" → cost_price
 
-3. 如果截图中有"持有收益"等累计盈亏信息，profit_loss 字段一定不能为 0，必须填写实际值
-
-4. 如果是基金类产品，quantity 通常是份额，current_price 是最新净值
-5. 如果是股票，quantity 是股数，current_price 是当前股价
-6. 金额单位统一为人民币元
-7. 只返回上述 JSON 对象，不要包含其他文字或 markdown 格式标记
-
-⚠️ 重要：去重匹配规则
-为避免因 OCR 误差导致重复录入，请将识别到的产品名称、平台名称、资产类型与下面的已有数据进行模糊匹配。
-如果识别结果与已有数据高度相似（仅有个别字差异、多/少空格、简称vs全称等），请直接使用已有数据中的名称，而非 OCR 原始结果。
-
-$EXISTING_DATA_BLOCK$
+数字规则：精确提取含小数，"+"为正值，"-"为负值，逗号是千分位。profit_loss 有值时不能填 0。金额单位：人民币元。
 
 请返回纯 JSON 对象："""
 
@@ -253,22 +246,29 @@ def _repair_truncated_json(text: str) -> list:
 
 
 def _build_existing_data_block(existing_holdings: list[dict] | None) -> str:
-    """构建已有数据块，嵌入到提示词中"""
+    """构建已有数据块，按平台分组，嵌入到提示词中"""
     if not existing_holdings:
         return "（当前无已有持仓数据）"
 
-    names = sorted(set(h['name'] for h in existing_holdings if h.get('name')))
-    platforms = sorted(set(h['platform'] for h in existing_holdings if h.get('platform')))
-    categories = sorted(set(h['asset_type'] for h in existing_holdings if h.get('asset_type')))
+    # Group products by platform
+    from collections import defaultdict
+    by_platform = defaultdict(set)
+    all_names = set()
+    for h in existing_holdings:
+        name = h.get('name', '')
+        platform = h.get('platform', '') or '未知平台'
+        if name:
+            by_platform[platform].add(name)
+            all_names.add(name)
 
-    lines = []
-    if names:
-        lines.append(f"已有产品名称：{', '.join(names)}")
-    if platforms:
-        lines.append(f"已有平台名称：{', '.join(platforms)}")
-    if categories:
-        lines.append(f"已有资产类型：{', '.join(categories)}")
-    return '\n'.join(lines) if lines else "（当前无已有持仓数据）"
+    if not all_names:
+        return "（当前无已有持仓数据）"
+
+    lines = ["系统中已有持仓（按平台分组）："]
+    for platform, names in sorted(by_platform.items()):
+        lines.append(f"  【{platform}】{', '.join(sorted(names))}")
+
+    return '\n'.join(lines)
 
 
 def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str,
