@@ -3,203 +3,311 @@
 {% block title %}历史记录{% endblock %}
 
 {% block content %}
-<div class="page-header flex-between">
-    <div>
-        <h2>历史记录</h2>
-        <p>资产净值变化与操作日志</p>
-    </div>
-    <button class="btn btn-primary" onclick="createSnapshot()">📸 记录当前快照</button>
+<div class="page-header flex-between" style="margin-bottom: 12px;">
+    <h2>历史记录</h2>
+    <button class="btn btn-primary btn-sm" onclick="createSnapshot()">📸 记录快照</button>
 </div>
 
-<!-- Performance Panel -->
-<div class="card mb-3 animate-in">
-    <div class="card-header flex-between" style="align-items: center;">
-        <h3>📊 区间投资回报分析</h3>
-        <div class="btn-group" id="perfRangeBtns" style="flex-wrap: wrap; gap: 4px; justify-content: flex-end;">
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('1w', this)">近1周</button>
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('1m', this)">近1月</button>
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('3m', this)">近3月</button>
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('6m', this)">近半年</button>
-            <button class="btn btn-sm btn-primary active" onclick="loadPerformance('ytd', this)">今年以来</button>
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('1y', this)">近1年</button>
-            <button class="btn btn-sm btn-secondary" onclick="loadPerformance('all', this)">全部</button>
-        </div>
-    </div>
-    <div class="card-body">
-        <div class="grid-3" style="text-align: center; margin-top: 10px; margin-bottom: 10px;">
-            <div>
-                <div class="text-sm text-muted" style="margin-bottom: 4px;">时间加权收益率 (Modified Dietz)</div>
-                <div class="font-mono font-bold" id="perfRate" style="font-size: 24px;">--%</div>
-            </div>
-            <div>
-                <div class="text-sm text-muted" style="margin-bottom: 4px;">区间绝对净收益</div>
-                <div class="font-mono font-bold" id="perfProfit" style="font-size: 20px;">¥--</div>
-            </div>
-            <div>
-                <div class="text-sm text-muted" style="margin-bottom: 4px;">区间净注入资金</div>
-                <div class="font-mono font-bold" id="perfNetFlow" style="font-size: 20px;">¥--</div>
+<!-- Performance Panel + Total Value Chart side by side -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;" class="animate-in">
+    <div class="card">
+        <div class="card-header" style="padding: 10px 16px;">
+            <h3>📊 区间回报</h3>
+            <div class="btn-group" id="perfRangeBtns" style="flex-wrap: wrap; gap: 3px;">
+                <button class="btn btn-sm btn-secondary" onclick="loadPerformance('1m', this)" style="padding: 2px 8px; font-size: 0.75rem;">1月</button>
+                <button class="btn btn-sm btn-secondary" onclick="loadPerformance('3m', this)" style="padding: 2px 8px; font-size: 0.75rem;">3月</button>
+                <button class="btn btn-sm btn-primary active" onclick="loadPerformance('ytd', this)" style="padding: 2px 8px; font-size: 0.75rem;">今年</button>
+                <button class="btn btn-sm btn-secondary" onclick="loadPerformance('1y', this)" style="padding: 2px 8px; font-size: 0.75rem;">1年</button>
+                <button class="btn btn-sm btn-secondary" onclick="loadPerformance('all', this)" style="padding: 2px 8px; font-size: 0.75rem;">全部</button>
             </div>
         </div>
-        <div class="text-center text-sm text-muted" id="perfDates" style="opacity: 0.7;">计算区间: 加载中...</div>
+        <div class="card-body" style="padding: 16px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center; gap: 8px;">
+                <div>
+                    <div class="text-xs text-muted">收益率</div>
+                    <div class="font-mono font-bold" id="perfRate" style="font-size: 22px;">--%</div>
+                </div>
+                <div>
+                    <div class="text-xs text-muted">净收益</div>
+                    <div class="font-mono font-bold" id="perfProfit" style="font-size: 18px;">¥--</div>
+                </div>
+                <div>
+                    <div class="text-xs text-muted">净注入</div>
+                    <div class="font-mono font-bold" id="perfNetFlow" style="font-size: 18px;">¥--</div>
+                </div>
+            </div>
+            <div class="text-center text-xs text-muted mt-1" id="perfDates" style="opacity: 0.6;"></div>
+        </div>
     </div>
+
+    {% if snapshots %}
+    <div class="card">
+        <div class="card-header" style="padding: 10px 16px;">
+            <h3>📈 资产总值趋势</h3>
+        </div>
+        <div class="card-body" style="padding: 10px 16px;">
+            <div class="chart-container" style="height: 160px;">
+                <canvas id="totalValueChart"></canvas>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
-<!-- Layer History Mixed Chart -->
 {% if snapshots %}
-<div class="card mb-3 animate-in stagger-1">
-    <div class="card-header">
-        <h3>📈 资产总值与层级构成演变</h3>
+<!-- Layer Ratio -->
+<div class="card animate-in stagger-1" style="margin-bottom: 12px;">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>🧩 层级配比（实际 vs 目标）</h3>
     </div>
-    <div class="card-body">
-        <div class="chart-container" style="height: 300px;">
-            <canvas id="layerHistoryChart"></canvas>
-        </div>
+    <div class="card-body" style="padding: 12px 16px;">
+        <div id="layerRatioBars"></div>
+        <div id="layerRatioHistory" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 12px;"></div>
     </div>
 </div>
 {% endif %}
 
-<!-- Snapshots Table -->
-<div class="card mb-3 animate-in stagger-2">
-    <div class="card-header">
-        <h3>📋 快照记录</h3>
-    </div>
-    <div class="card-body">
-        {% if snapshots %}
-        <table>
-            <thead>
-                <tr>
-                    <th>日期</th>
-                    <th class="text-right">总资产</th>
-                    <th>备注</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for s in snapshots %}
-                <tr>
-                    <td>{{ s.date|date:"Y-m-d H:i:s" }}</td>
-                    <td class="text-right font-mono">¥{{ s.total_value|floatformat:0 }}</td>
-                    <td class="text-muted">{{ s.notes|default:"-" }}</td>
-                    <td>
-                        <button class="btn btn-sm btn-danger" onclick="deleteSnapshot({{ s.id }}, '{{ s.date }}')">删除</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <div class="empty-state">
-            <div class="empty-state-text">暂无快照</div>
+<!-- Snapshots + Transactions side by side -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;" class="animate-in stagger-2">
+    <!-- Snapshots Table -->
+    <div class="card">
+        <div class="card-header" style="padding: 10px 16px;">
+            <h3>📋 快照记录</h3>
         </div>
-        {% endif %}
+        <div class="card-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
+            {% if snapshots %}
+            <table>
+                <thead><tr><th>日期</th><th class="text-right">总资产</th><th></th></tr></thead>
+                <tbody>
+                    {% for s in snapshots %}
+                    <tr>
+                        <td style="padding: 6px 16px; white-space: nowrap;">{{ s.date|date:"Y-m-d" }}</td>
+                        <td class="text-right font-mono" style="padding: 6px 16px;">¥{{ s.total_value|floatformat:0 }}</td>
+                        <td style="padding: 6px 8px;"><button class="btn btn-sm btn-danger" style="padding: 1px 8px; font-size: 0.7rem;" onclick="deleteSnapshot({{ s.id }}, '{{ s.date }}')">删除</button></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state" style="padding: 24px;"><div class="empty-state-text">暂无快照</div></div>
+            {% endif %}
+        </div>
     </div>
-</div>
 
-<!-- Transaction Log -->
-<div class="card animate-in stagger-3">
-    <div class="card-header">
-        <h3>📝 操作日志</h3>
-    </div>
-    <div class="card-body">
-        {% if transactions %}
-        <div class="timeline">
-            {% for tx in transactions %}
-            <div class="timeline-item">
-                <div class="timeline-dot" style="background: {% if tx.action == 'buy' or tx.action == 'transfer' %}var(--color-success){% elif tx.action == 'sell' or tx.action == 'withdraw' %}var(--color-danger){% else %}var(--color-primary){% endif %};"></div>
-                <div class="timeline-date">{{ tx.date|date:"Y-m-d" }}</div>
-                <div class="timeline-content">
-                    <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
-                    {{ tx.asset_name }}
-                    <span class="font-mono" style="margin-left: 8px;">¥{{ tx.amount|floatformat:0 }}</span>
+    <!-- Transaction Log -->
+    <div class="card">
+        <div class="card-header flex-between" style="padding: 10px 16px;">
+            <h3>📝 操作日志</h3>
+            <button class="btn btn-primary btn-sm" onclick="showTxForm()">+ 添加</button>
+        </div>
+        <div class="card-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
+            <!-- Add / Edit Form -->
+            <div id="txForm" class="hidden" style="padding: 12px 16px; background: var(--color-surface); border-bottom: 1px solid var(--color-border);">
+                <input type="hidden" id="txEditId" value="">
+                <div style="display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: end;">
+                    <div>
+                        <label class="text-xs text-muted">类型</label>
+                        <select id="txAction" class="form-control" style="font-size: 0.8rem;">
+                            <option value="transfer">转入</option>
+                            <option value="withdraw">转出</option>
+                            <option value="buy">买入</option>
+                            <option value="sell">卖出</option>
+                            <option value="dividend">分红</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">日期</label>
+                        <input type="date" id="txDate" class="form-control" style="font-size: 0.8rem;">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">名称</label>
+                        <input type="text" id="txName" class="form-control" placeholder="如：日常工资" style="font-size: 0.8rem;">
+                    </div>
+                    <div>
+                        <label class="text-xs text-muted">金额</label>
+                        <input type="number" id="txAmount" class="form-control" step="any" placeholder="0" style="font-size: 0.8rem; width: 100px;">
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px;">
+                    <input type="text" id="txNotes" class="form-control" placeholder="备注（可选）" style="font-size: 0.8rem; flex: 1;">
+                    <button class="btn btn-secondary btn-sm" onclick="hideTxForm()">取消</button>
+                    <button class="btn btn-primary btn-sm" onclick="saveTx()">保存</button>
                 </div>
             </div>
-            {% endfor %}
+
+            {% if transactions %}
+            <table>
+                <tbody>
+                    {% for tx in transactions %}
+                    <tr id="tx-row-{{ tx.id }}">
+                        <td style="padding: 6px 16px; white-space: nowrap;">{{ tx.date|date:"Y-m-d" }}</td>
+                        <td style="padding: 6px 4px;">
+                            <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
+                        </td>
+                        <td style="padding: 6px 4px;">{{ tx.asset_name }}</td>
+                        <td class="text-right font-mono" style="padding: 6px 8px; white-space: nowrap;">¥{{ tx.amount|floatformat:0 }}</td>
+                        <td style="padding: 6px 8px; white-space: nowrap;">
+                            <button class="btn btn-sm btn-secondary" style="padding: 1px 6px; font-size: 0.7rem;" onclick="editTx({{ tx.id }}, '{{ tx.action }}', '{{ tx.date|date:"Y-m-d" }}', '{{ tx.asset_name }}', {{ tx.amount }}, '{{ tx.notes|escapejs }}')">编辑</button>
+                            <button class="btn btn-sm btn-danger" style="padding: 1px 6px; font-size: 0.7rem;" onclick="deleteTx({{ tx.id }})">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state" style="padding: 24px;"><div class="empty-state-text">暂无操作记录</div></div>
+            {% endif %}
         </div>
-        {% else %}
-        <div class="empty-state">
-            <div class="empty-state-icon">📝</div>
-            <div class="empty-state-text">暂无操作记录</div>
-        </div>
-        {% endif %}
     </div>
 </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const snapshots = {{ snapshots_json|safe }};
+    const targetRatios = {{ target_ratios_json|safe }};
     
     if (snapshots.length > 0) {
-        const layerNames = Object.keys(snapshots[0].layer_values || {});
+        const labels = snapshots.map(s => s.date);
+        const yTickCb = v => '¥' + (v >= 10000 ? (v/10000).toFixed(0) + '万' : v.toLocaleString());
+        const chartDefaults = {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, usePointStyle: true } },
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#64748b', font: { family: 'Inter' }, callback: yTickCb }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            },
+        };
+
+        // 1. Total value line chart
+        new Chart(document.getElementById('totalValueChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: '总资产',
+                    data: snapshots.map(s => s.total_value),
+                    borderColor: 'hsl(210, 100%, 60%)',
+                    backgroundColor: 'hsla(210, 100%, 60%, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                }],
+            },
+            options: { ...chartDefaults, plugins: { ...chartDefaults.plugins, legend: { display: false } } },
+        });
+
+        // 2. Layer ratio bars — latest snapshot actual vs target
+        const latest = snapshots[snapshots.length - 1];
+        const layerNames = Object.keys(latest.layer_ratios || latest.layer_values || {});
         const layerColors = [
             'hsl(152, 65%, 50%)', 'hsl(200, 80%, 55%)',
             'hsl(35, 90%, 55%)', 'hsl(45, 95%, 55%)', 'hsl(300, 65%, 55%)'
         ];
 
         if (layerNames.length > 0) {
-            const ctx2 = document.getElementById('layerHistoryChart').getContext('2d');
-            
-            // Build datasets: 1 Line chart (Total), multiple Bar charts (Layers)
-            const datasets = [
-                {
-                    label: '总资产',
-                    type: 'line',
-                    data: snapshots.map(s => s.total_value),
-                    borderColor: 'hsl(210, 100%, 60%)',
-                    backgroundColor: 'hsl(210, 100%, 60%)',
-                    fill: false,
-                    tension: 0.3,
-                    borderWidth: 2,
-                    pointRadius: 3,
-                    pointHoverRadius: 5,
-                    stack: 'line-total',
-                    order: 0, // Draw on top
-                },
-                ...layerNames.map((name, i) => ({
-                    label: name,
-                    type: 'bar',
-                    data: snapshots.map(s => (s.layer_values || {})[name] || 0),
-                    borderColor: layerColors[i % layerColors.length],
-                    backgroundColor: layerColors[i % layerColors.length] + 'DD',
-                    borderWidth: 1,
-                    stack: 'bar-layers',
-                    order: 1,
-                }))
-            ];
+            const container = document.getElementById('layerRatioBars');
+            const maxPct = Math.max(
+                ...layerNames.map(n => Math.max(
+                    (latest.layer_ratios || {})[n] || 0,
+                    targetRatios[n] || 0
+                )),
+                10
+            ) * 1.15;
 
-            new Chart(ctx2, {
-                data: {
-                    labels: snapshots.map(s => s.date),
-                    datasets: datasets,
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {
-                        mode: 'index',
-                        intersect: false,
-                    },
-                    plugins: {
-                        legend: {
-                            labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, usePointStyle: true },
-                        },
-                    },
-                    scales: {
-                        x: {
-                            ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                        },
-                        y: {
-                            stacked: true,
-                            ticks: {
-                                color: '#64748b',
-                                font: { family: 'Inter' },
-                                callback: v => '¥' + (v >= 10000 ? (v/10000).toFixed(0) + '万' : v.toLocaleString()),
-                            },
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                        },
-                    },
-                },
+            layerNames.forEach((name, i) => {
+                const actual = ((latest.layer_ratios || {})[name] || 0);
+                const target = targetRatios[name] || 0;
+                const diff = actual - target;
+                const color = layerColors[i % layerColors.length];
+                const diffColor = Math.abs(diff) > 5 ? 'var(--color-danger)' : Math.abs(diff) > 3 ? 'var(--color-warning)' : 'var(--color-success)';
+
+                const row = document.createElement('div');
+                row.style.cssText = 'margin-bottom: 8px;';
+                row.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+                        <span class="text-sm font-bold">${name}</span>
+                        <span class="font-mono text-sm">
+                            <span style="color: ${color}">${actual.toFixed(1)}%</span>
+                            <span class="text-muted"> / </span>
+                            <span class="text-muted">${target.toFixed(1)}%</span>
+                            <span style="color: ${diffColor}; margin-left: 6px;">${diff > 0 ? '+' : ''}${diff.toFixed(1)}%</span>
+                        </span>
+                    </div>
+                    <div style="position: relative; height: 18px; background: var(--color-surface); border-radius: 4px; overflow: hidden;">
+                        <div style="position: absolute; height: 100%; width: ${(actual / maxPct * 100).toFixed(1)}%; background: ${color}; border-radius: 6px; opacity: 0.85; transition: width 0.5s;"></div>
+                        <div style="position: absolute; height: 100%; left: ${(target / maxPct * 100).toFixed(1)}%; width: 2px; background: var(--color-text); opacity: 0.5;" title="目标 ${target.toFixed(1)}%"></div>
+                    </div>
+                `;
+                container.appendChild(row);
             });
+
+            // Small-multiples: one mini chart per layer showing ratio over time
+            if (snapshots.length > 1) {
+                const histContainer = document.getElementById('layerRatioHistory');
+                layerNames.forEach((name, i) => {
+                    const color = layerColors[i % layerColors.length];
+                    const target = targetRatios[name] || 0;
+
+                    const wrapper = document.createElement('div');
+                    wrapper.style.cssText = 'background: var(--color-surface); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border);';
+                    wrapper.innerHTML = `<div class="text-xs font-bold" style="margin-bottom: 4px;">${name}</div><div style="height: 80px;"><canvas></canvas></div>`;
+                    histContainer.appendChild(wrapper);
+
+                    const canvas = wrapper.querySelector('canvas');
+                    new Chart(canvas.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: '实际',
+                                    data: snapshots.map(s => {
+                                        const r = s.layer_ratios || {};
+                                        if (r[name] !== undefined) return r[name];
+                                        const v = s.layer_values || {};
+                                        const t = Object.values(v).reduce((a, b) => a + b, 0);
+                                        return t > 0 ? ((v[name] || 0) / t * 100) : 0;
+                                    }),
+                                    borderColor: color,
+                                    backgroundColor: color.replace(')', ', 0.15)').replace('hsl', 'hsla'),
+                                    fill: true,
+                                    tension: 0.3,
+                                    borderWidth: 2,
+                                    pointRadius: 2,
+                                },
+                                {
+                                    label: '目标',
+                                    data: snapshots.map(() => target),
+                                    borderColor: 'var(--color-text)',
+                                    borderDash: [4, 3],
+                                    borderWidth: 1,
+                                    pointRadius: 0,
+                                    fill: false,
+                                },
+                            ],
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                x: { display: false },
+                                y: {
+                                    min: 0,
+                                    ticks: { color: '#64748b', font: { size: 10 }, callback: v => v + '%', maxTicksLimit: 4 },
+                                    grid: { color: 'rgba(255,255,255,0.05)' },
+                                },
+                            },
+                        },
+                    });
+                });
+            }
         }
     }
 });
@@ -313,6 +421,90 @@ function loadPerformance(range, btn) {
 document.addEventListener('DOMContentLoaded', () => {
     loadPerformance('ytd', document.querySelector('#perfRangeBtns .active'));
 });
+
+// ---- Transaction CRUD ----
+
+function showTxForm() {
+    document.getElementById('txEditId').value = '';
+    document.getElementById('txAction').value = 'transfer';
+    document.getElementById('txDate').value = new Date().toISOString().split('T')[0];
+    document.getElementById('txName').value = '';
+    document.getElementById('txAmount').value = '';
+    document.getElementById('txNotes').value = '';
+    document.getElementById('txForm').classList.remove('hidden');
+}
+
+function hideTxForm() {
+    document.getElementById('txForm').classList.add('hidden');
+}
+
+function editTx(id, action, date, name, amount, notes) {
+    document.getElementById('txEditId').value = id;
+    document.getElementById('txAction').value = action;
+    document.getElementById('txDate').value = date;
+    document.getElementById('txName').value = name;
+    document.getElementById('txAmount').value = amount;
+    document.getElementById('txNotes').value = notes;
+    document.getElementById('txForm').classList.remove('hidden');
+    document.getElementById('txForm').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function saveTx() {
+    const editId = document.getElementById('txEditId').value;
+    const payload = {
+        action: document.getElementById('txAction').value,
+        date: document.getElementById('txDate').value,
+        asset_name: document.getElementById('txName').value,
+        amount: parseFloat(document.getElementById('txAmount').value) || 0,
+        notes: document.getElementById('txNotes').value,
+    };
+
+    if (!payload.asset_name || payload.amount <= 0) {
+        showToast('请填写名称和金额', 'error');
+        return;
+    }
+
+    const url = editId
+        ? `/api/transaction/${editId}/update/`
+        : '{% url "assets:api_transaction_create" %}';
+
+    fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify(payload),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast(editId ? '已更新' : '已添加', 'success');
+            setTimeout(() => location.reload(), 400);
+        } else {
+            showToast('保存失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => showToast('请求失败', 'error'));
+}
+
+function deleteTx(id) {
+    if (!confirm('确定删除这条记录？')) return;
+    fetch(`/api/transaction/${id}/delete/`, {
+        method: 'DELETE',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' },
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showToast('已删除', 'success');
+            document.getElementById('tx-row-' + id).remove();
+        } else {
+            showToast('删除失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => showToast('请求失败', 'error'));
+}
 
 </script>
 {% endblock %}

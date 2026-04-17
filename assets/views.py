@@ -170,20 +170,27 @@ def history_page(request):
     """历史记录页面"""
     snapshots = Snapshot.objects.all()[:60]
     transactions = Transaction.objects.all()[:50]
+    layers = AssetLayer.objects.all()
 
     snapshots_json = json.dumps([
         {
             'date': timezone.localtime(s.date).strftime('%Y-%m-%d %H:%M:%S'),
             'total_value': s.total_value,
             'layer_values': s.layer_values,
+            'layer_ratios': s.layer_ratios,
         }
         for s in reversed(list(snapshots))
     ], cls=DecimalEncoder, ensure_ascii=False)
+
+    target_ratios_json = json.dumps({
+        l.name: float(l.target_ratio) for l in layers
+    }, ensure_ascii=False)
 
     context = {
         'snapshots': snapshots,
         'transactions': transactions,
         'snapshots_json': snapshots_json,
+        'target_ratios_json': target_ratios_json,
     }
     return render(request, 'assets/history.html', context)
 
@@ -400,6 +407,41 @@ def api_transaction_create(request):
             amount=amount,
             date=tx_date,
         )
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_POST
+def api_transaction_update(request, tx_id):
+    """更新操作日志"""
+    try:
+        tx = get_object_or_404(Transaction, id=tx_id)
+        data = json.loads(request.body)
+
+        if 'action' in data:
+            tx.action = data['action']
+        if 'asset_name' in data:
+            tx.asset_name = data['asset_name']
+        if 'amount' in data:
+            tx.amount = Decimal(str(data['amount']))
+        if 'date' in data:
+            tx.date = data['date']
+        if 'notes' in data:
+            tx.notes = data['notes']
+
+        tx.save()
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_http_methods(["DELETE"])
+def api_transaction_delete(request, tx_id):
+    """删除操作日志"""
+    try:
+        tx = get_object_or_404(Transaction, id=tx_id)
+        tx.delete()
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
