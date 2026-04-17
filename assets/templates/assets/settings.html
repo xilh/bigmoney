@@ -5,94 +5,270 @@
 {% block content %}
 <div class="page-header">
     <h2>系统设置</h2>
-    <p>配置 AI 模型、目标比例、数据导入导出</p>
+    <p>配置 OCR 模型、AI 顾问模型、目标比例、数据导入导出</p>
 </div>
 
-<!-- LLM Provider Selection -->
+<!-- OCR LLM Config -->
 <div class="card mb-3 animate-in">
     <div class="card-header">
-        <h3>🤖 AI 模型配置</h3>
+        <h3>📷 截图识别（OCR）模型配置</h3>
     </div>
     <div class="card-body">
-        <p class="text-sm text-muted mb-2">选择用于截图识别的 AI 模型。支持本地大模型（Ollama、vLLM、LM Studio 等）和 Anthropic Claude API。</p>
+        <p class="text-sm text-muted mb-2">选择用于<strong>截图识别</strong>的 AI 模型。OCR 对模型要求不高，可使用较小/便宜的模型。</p>
 
-        <!-- Provider Selector -->
+        <!-- Mode: Local / Cloud -->
         <div class="form-group">
-            <label class="form-label">模型提供商</label>
-            <div class="tabs" style="max-width: 400px;">
-                <button class="tab {% if llm_provider == 'openai_compatible' %}active{% endif %}" 
-                    data-provider="openai_compatible" onclick="switchProvider('openai_compatible')">
-                    🖥️ 本地模型
+            <label class="form-label">部署方式</label>
+            <div class="tabs" style="max-width: 300px;">
+                <button class="tab {% if llm_mode == 'local' %}active{% endif %}"
+                    data-ocr-mode="local" onclick="switchOcrMode('local')">
+                    🖥 本地模型
                 </button>
-                <button class="tab {% if llm_provider == 'anthropic' %}active{% endif %}" 
-                    data-provider="anthropic" onclick="switchProvider('anthropic')">
-                    ☁️ Anthropic
+                <button class="tab {% if llm_mode != 'local' %}active{% endif %}"
+                    data-ocr-mode="cloud" onclick="switchOcrMode('cloud')">
+                    ☁️ 云端模型
                 </button>
             </div>
         </div>
 
-        <!-- Local Model Config -->
-        <div id="localConfig" class="{% if llm_provider == 'anthropic' %}hidden{% endif %}" style="margin-top: 16px;">
-            <div class="alert alert-info mb-2">
-                💡 本地模型需要支持 OpenAI 兼容 API 和视觉（多模态）能力。推荐：Ollama + llava / minicpm-v / qwen2.5-vl 等
+        <!-- Local Config -->
+        <div id="ocrLocalConfig" class="{% if llm_mode != 'local' %}hidden{% endif %}" style="margin-top: 16px;">
+            <div class="form-group">
+                <label class="form-label">API 协议</label>
+                <div class="tabs" style="max-width: 300px;">
+                    <button class="tab {% if llm_provider != 'anthropic' %}active{% endif %}"
+                        data-ocr-protocol="openai_compatible" onclick="switchOcrProtocol('openai_compatible')">
+                        OpenAI 协议
+                    </button>
+                    <button class="tab {% if llm_provider == 'anthropic' %}active{% endif %}"
+                        data-ocr-protocol="anthropic" onclick="switchOcrProtocol('anthropic')">
+                        Anthropic 协议
+                    </button>
+                </div>
+                <p class="text-xs text-muted mt-1">Ollama、vLLM 使用 OpenAI 协议；LM Studio 两种均支持</p>
             </div>
             <div class="form-row">
                 <div class="form-group">
-                    <label class="form-label">API 地址 *</label>
-                    <input type="text" class="form-control" id="localApiUrl" 
-                        value="{{ local_api_url }}"
-                        placeholder="如 http://localhost:11434/v1">
-                    <p class="text-xs text-muted mt-1">Ollama 默认: http://localhost:11434/v1 · LM Studio 默认: http://localhost:1234/v1</p>
+                    <label class="form-label">API 地址</label>
+                    <input type="text" class="form-control" id="ocrLocalUrl"
+                        value="{% if llm_mode == 'local' %}{{ llm_api_url }}{% endif %}"
+                        placeholder="http://localhost:11434/v1">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">模型名称 *</label>
-                    <input type="text" class="form-control" id="localModel" 
-                        value="{{ local_model }}"
-                        placeholder="如 llava, minicpm-v, qwen2.5-vl">
+                    <label class="form-label">模型名称</label>
+                    <input type="text" class="form-control" id="ocrLocalModel"
+                        value="{% if llm_mode == 'local' %}{{ llm_model }}{% endif %}"
+                        placeholder="如 llava, qwen2.5-vl">
                 </div>
             </div>
             <div class="form-group">
-                <label class="form-label">API Key（如需要）</label>
-                <input type="password" class="form-control" id="localApiKey" 
-                    placeholder="{% if has_local_key %}已配置: {{ masked_local_key }}{% else %}本地模型通常不需要 Key，留空即可{% endif %}"
+                <label class="form-label">API Key <span class="text-muted">(可选)</span></label>
+                <input type="password" class="form-control" id="ocrLocalKey"
+                    placeholder="{% if has_api_key and llm_mode == 'local' %}已配置: {{ masked_api_key }}{% else %}本地模型通常无需填写{% endif %}"
                     style="max-width: 400px;">
-                {% if has_local_key %}
+                {% if has_api_key and llm_mode == 'local' %}
                 <div class="badge badge-success mt-1">✓ 已配置</div>
                 {% endif %}
             </div>
         </div>
 
-        <!-- Anthropic Config -->
-        <div id="anthropicConfig" class="{% if llm_provider != 'anthropic' %}hidden{% endif %}" style="margin-top: 16px;">
+        <!-- Cloud Config -->
+        <div id="ocrCloudConfig" class="{% if llm_mode == 'local' %}hidden{% endif %}" style="margin-top: 16px;">
             <div class="form-group">
-                <label class="form-label">Anthropic API Key *</label>
-                <p class="text-sm text-muted mb-1">获取方式：<a href="https://console.anthropic.com/" target="_blank" style="color: var(--color-primary);">console.anthropic.com</a></p>
-                <input type="password" class="form-control" id="anthropicApiKey" 
-                    placeholder="{% if has_anthropic_key %}已配置: {{ masked_anthropic_key }}{% else %}sk-ant-...{% endif %}"
+                <label class="form-label">云端服务商</label>
+                <select class="form-control" id="ocrCloudProvider" onchange="applyOcrCloud(this.value)" style="max-width: 300px;">
+                    <option value="">-- 选择服务商 --</option>
+                    <optgroup label="国际">
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="mistral">Mistral</option>
+                        <option value="groq">Groq</option>
+                        <option value="together">Together AI</option>
+                    </optgroup>
+                    <optgroup label="国内">
+                        <option value="qwen">通义千问 (Qwen)</option>
+                        <option value="zhipu">智谱 GLM</option>
+                        <option value="moonshot">Moonshot (Kimi)</option>
+                        <option value="siliconflow">SiliconFlow (硅基流动)</option>
+                        <option value="minimax">MiniMax</option>
+                        <option value="minimax_cn">MiniMax (国内端点)</option>
+                    </optgroup>
+                </select>
+                <p class="text-xs mt-1" id="ocrCloudNote" style="color: var(--color-primary);"></p>
+            </div>
+            <div class="form-group">
+                <label class="form-label">API Key</label>
+                <input type="password" class="form-control" id="ocrCloudKey"
+                    placeholder="{% if has_api_key and llm_mode != 'local' %}已配置: {{ masked_api_key }}{% else %}填入对应平台的 API Key{% endif %}"
                     style="max-width: 400px;">
-                {% if has_anthropic_key %}
+                {% if has_api_key and llm_mode != 'local' %}
                 <div class="badge badge-success mt-1">✓ 已配置</div>
                 {% endif %}
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">API 地址 <span class="text-muted">(自动填入，可修改)</span></label>
+                    <input type="text" class="form-control" id="ocrCloudUrl"
+                        value="{% if llm_mode != 'local' %}{{ llm_api_url }}{% endif %}"
+                        placeholder="选择服务商后自动填入">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">模型名称</label>
+                    <input type="text" class="form-control" id="ocrCloudModel"
+                        value="{% if llm_mode != 'local' %}{{ llm_model }}{% endif %}"
+                        placeholder="选择服务商后自动填入">
+                </div>
             </div>
         </div>
 
         <div class="form-group mt-2" style="border-top: 1px solid var(--color-border); padding-top: 16px;">
             <label class="form-label">最大输出 Token 数 (max_tokens)</label>
-            <input type="number" class="form-control" id="llmMaxTokens" 
+            <input type="number" class="form-control" id="llmMaxTokens"
                 value="{{ llm_max_tokens|default:'2048' }}"
                 style="max-width: 150px;">
-            <p class="text-xs text-muted mt-1">控制 AI 返回内容的长短上限。若本地小模型经常“说到一半截断失败”，可调低此值以适配模型（例如 1024 或 2048）。</p>
+            <p class="text-xs text-muted mt-1">控制 AI 返回内容的长短上限。若本地小模型经常截断，可调低此值。</p>
         </div>
 
         <div class="mt-2">
-            <button class="btn btn-primary" onclick="saveLLMConfig()">保存 AI 配置</button>
-            <button class="btn btn-secondary" onclick="testLLMConnection()" style="margin-left: 8px;">🔍 测试连接</button>
+            <button class="btn btn-primary" onclick="saveOcrConfig()">保存 OCR 配置</button>
+            <button class="btn btn-secondary" onclick="testConnection('ocr')" style="margin-left: 8px;">🔍 测试连接</button>
+        </div>
+    </div>
+</div>
+
+<!-- Advisor LLM Config -->
+<div class="card mb-3 animate-in stagger-1">
+    <div class="card-header">
+        <h3>🧠 AI 顾问模型配置</h3>
+    </div>
+    <div class="card-body">
+        <p class="text-sm text-muted mb-2">AI 顾问需要<strong>更强的推理能力</strong>来评估持仓、给出买卖建议。建议使用旗舰模型，与 OCR 模型独立配置。</p>
+
+        <!-- Mode: Local / Cloud -->
+        <div class="form-group">
+            <label class="form-label">部署方式</label>
+            <div class="tabs" style="max-width: 300px;">
+                <button class="tab {% if advisor_mode == 'local' %}active{% endif %}"
+                    data-adv-mode="local" onclick="switchAdvMode('local')">
+                    🖥 本地模型
+                </button>
+                <button class="tab {% if advisor_mode != 'local' %}active{% endif %}"
+                    data-adv-mode="cloud" onclick="switchAdvMode('cloud')">
+                    ☁️ 云端模型
+                </button>
+            </div>
+        </div>
+
+        <!-- Local Config -->
+        <div id="advLocalConfig" class="{% if advisor_mode != 'local' %}hidden{% endif %}" style="margin-top: 16px;">
+            <div class="form-group">
+                <label class="form-label">API 协议</label>
+                <div class="tabs" style="max-width: 300px;">
+                    <button class="tab {% if advisor_provider != 'anthropic' %}active{% endif %}"
+                        data-adv-protocol="openai_compatible" onclick="switchAdvProtocol('openai_compatible')">
+                        OpenAI 协议
+                    </button>
+                    <button class="tab {% if advisor_provider == 'anthropic' %}active{% endif %}"
+                        data-adv-protocol="anthropic" onclick="switchAdvProtocol('anthropic')">
+                        Anthropic 协议
+                    </button>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">API 地址</label>
+                    <input type="text" class="form-control" id="advLocalUrl"
+                        value="{% if advisor_mode == 'local' %}{{ advisor_api_url }}{% endif %}"
+                        placeholder="http://localhost:11434/v1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">模型名称</label>
+                    <input type="text" class="form-control" id="advLocalModel"
+                        value="{% if advisor_mode == 'local' %}{{ advisor_model }}{% endif %}"
+                        placeholder="如 qwen2.5:72b">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">API Key <span class="text-muted">(可选)</span></label>
+                <input type="password" class="form-control" id="advLocalKey"
+                    placeholder="{% if has_advisor_key and advisor_mode == 'local' %}已配置: {{ masked_advisor_key }}{% else %}本地模型通常无需填写{% endif %}"
+                    style="max-width: 400px;">
+                {% if has_advisor_key and advisor_mode == 'local' %}
+                <div class="badge badge-success mt-1">✓ 已配置</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Cloud Config -->
+        <div id="advCloudConfig" class="{% if advisor_mode == 'local' %}hidden{% endif %}" style="margin-top: 16px;">
+            <div class="form-group">
+                <label class="form-label">云端服务商</label>
+                <select class="form-control" id="advCloudProvider" onchange="applyAdvCloud(this.value)" style="max-width: 300px;">
+                    <option value="">-- 选择服务商 --</option>
+                    <optgroup label="国际">
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="mistral">Mistral</option>
+                        <option value="groq">Groq</option>
+                        <option value="together">Together AI</option>
+                    </optgroup>
+                    <optgroup label="国内">
+                        <option value="qwen">通义千问 (Qwen)</option>
+                        <option value="zhipu">智谱 GLM</option>
+                        <option value="moonshot">Moonshot (Kimi)</option>
+                        <option value="siliconflow">SiliconFlow (硅基流动)</option>
+                        <option value="minimax">MiniMax</option>
+                        <option value="minimax_cn">MiniMax (国内端点)</option>
+                    </optgroup>
+                </select>
+                <p class="text-xs mt-1" id="advCloudNote" style="color: var(--color-primary);"></p>
+            </div>
+            <div class="form-group">
+                <label class="form-label">API Key</label>
+                <input type="password" class="form-control" id="advCloudKey"
+                    placeholder="{% if has_advisor_key and advisor_mode != 'local' %}已配置: {{ masked_advisor_key }}{% else %}填入对应平台的 API Key{% endif %}"
+                    style="max-width: 400px;">
+                {% if has_advisor_key and advisor_mode != 'local' %}
+                <div class="badge badge-success mt-1">✓ 已配置</div>
+                {% endif %}
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">API 地址 <span class="text-muted">(自动填入，可修改)</span></label>
+                    <input type="text" class="form-control" id="advCloudUrl"
+                        value="{% if advisor_mode != 'local' %}{{ advisor_api_url }}{% endif %}"
+                        placeholder="选择服务商后自动填入">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">模型名称</label>
+                    <input type="text" class="form-control" id="advCloudModel"
+                        value="{% if advisor_mode != 'local' %}{{ advisor_model }}{% endif %}"
+                        placeholder="选择服务商后自动填入">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group mt-2" style="border-top: 1px solid var(--color-border); padding-top: 16px;">
+            <label class="form-label">最大输出 Token 数 (max_tokens)</label>
+            <input type="number" class="form-control" id="advMaxTokens"
+                value="{{ advisor_max_tokens|default:'8192' }}"
+                style="max-width: 150px;">
+            <p class="text-xs text-muted mt-1">控制 AI 返回内容的长短上限。若持仓过多导致生成被截断，可调高此值（多数现代模型支持 8192 或更高）。</p>
+        </div>
+
+        <div class="mt-2">
+            <button class="btn btn-primary" onclick="saveAdvConfig()">保存顾问配置</button>
+            <button class="btn btn-secondary" onclick="testConnection('advisor')" style="margin-left: 8px;">🔍 测试连接</button>
         </div>
     </div>
 </div>
 
 <!-- Target Ratios -->
-<div class="card mb-3 animate-in stagger-1">
+<div class="card mb-3 animate-in stagger-2">
     <div class="card-header flex-between">
         <h3>📊 目标配置比例</h3>
         <button class="btn btn-primary btn-sm" onclick="saveRatios()">保存比例</button>
@@ -104,14 +280,14 @@
         <div class="flex-center gap-2 mb-2" style="padding: 12px 0; border-bottom: 1px solid var(--color-border);">
             <div class="layer-dot" style="background: {{ layer.color }}; width: 12px; height: 12px;"></div>
             <div style="width: 120px; font-weight: 600;">{{ layer.name }}</div>
-            <input type="range" class="range-slider flex-1" 
-                id="ratio-slider-{{ layer.id }}" 
+            <input type="range" class="range-slider flex-1"
+                id="ratio-slider-{{ layer.id }}"
                 min="0" max="50" step="0.5"
                 value="{{ layer.target_ratio }}"
                 data-layer-id="{{ layer.id }}"
                 oninput="updateRatioDisplay(this)">
             <div style="width: 70px; text-align: right;">
-                <input type="number" class="form-control" 
+                <input type="number" class="form-control"
                     id="ratio-input-{{ layer.id }}"
                     value="{{ layer.target_ratio }}"
                     step="0.5" min="0" max="100"
@@ -135,7 +311,7 @@
 </div>
 
 <!-- Data Management -->
-<div class="card mb-3 animate-in stagger-2">
+<div class="card mb-3 animate-in stagger-3">
     <div class="card-header">
         <h3>💾 数据管理</h3>
     </div>
@@ -157,7 +333,7 @@
 </div>
 
 <!-- About -->
-<div class="card animate-in stagger-3">
+<div class="card animate-in stagger-4">
     <div class="card-header">
         <h3>ℹ️ 关于</h3>
     </div>
@@ -175,106 +351,215 @@
 </div>
 
 <script>
-let currentProvider = '{{ llm_provider }}';
+// ==================== Cloud Provider Presets ====================
+const CLOUD_PROVIDERS = {
+    anthropic:   { url: '',                                                        protocol: 'anthropic',        ocr: 'claude-sonnet-4-20250514',                    adv: 'claude-opus-4-20250514',               note: '使用 Anthropic 原生 API' },
+    openai:      { url: 'https://api.openai.com/v1',                               protocol: 'openai_compatible', ocr: 'gpt-4o-mini',                                adv: 'gpt-4o',                               note: '使用 OpenAI API' },
+    gemini:      { url: 'https://generativelanguage.googleapis.com/v1beta/openai',  protocol: 'openai_compatible', ocr: 'gemini-2.5-flash',                           adv: 'gemini-2.5-pro',                       note: '使用 OpenAI 兼容 API（Google AI Studio）' },
+    deepseek:    { url: 'https://api.deepseek.com',                                protocol: 'openai_compatible', ocr: 'deepseek-chat',                              adv: 'deepseek-reasoner',                    note: '使用 OpenAI 兼容 API' },
+    mistral:     { url: 'https://api.mistral.ai/v1',                               protocol: 'openai_compatible', ocr: 'mistral-small-latest',                       adv: 'mistral-large-latest',                 note: '使用 OpenAI 兼容 API' },
+    groq:        { url: 'https://api.groq.com/openai/v1',                          protocol: 'openai_compatible', ocr: 'llama-3.3-70b-versatile',                    adv: 'llama-3.3-70b-versatile',              note: '使用 OpenAI 兼容 API' },
+    together:    { url: 'https://api.together.xyz/v1',                             protocol: 'openai_compatible', ocr: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',    adv: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', note: '使用 OpenAI 兼容 API' },
+    qwen:        { url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',       protocol: 'openai_compatible', ocr: 'qwen-vl-plus',                               adv: 'qwen-max',                             note: '使用 OpenAI 兼容 API（DashScope）' },
+    zhipu:       { url: 'https://open.bigmodel.cn/api/paas/v4',                    protocol: 'openai_compatible', ocr: 'glm-4v-flash',                               adv: 'glm-4-plus',                           note: '使用 OpenAI 兼容 API' },
+    moonshot:    { url: 'https://api.moonshot.cn/v1',                              protocol: 'openai_compatible', ocr: 'moonshot-v1-8k',                             adv: 'moonshot-v1-128k',                     note: '使用 OpenAI 兼容 API' },
+    siliconflow: { url: 'https://api.siliconflow.cn/v1',                           protocol: 'openai_compatible', ocr: 'Qwen/Qwen2.5-VL-7B-Instruct',               adv: 'deepseek-ai/DeepSeek-R1',              note: '使用 OpenAI 兼容 API' },
+    minimax:     { url: 'https://api.minimaxi.chat/v1',                            protocol: 'openai_compatible', ocr: 'MiniMax-Text-01',                            adv: 'MiniMax-M1',                           note: '使用 OpenAI 兼容 API（国际端点）' },
+    minimax_cn:  { url: 'https://api.minimax.chat/v1',                             protocol: 'openai_compatible', ocr: 'MiniMax-Text-01',                            adv: 'MiniMax-M1',                           note: '使用 OpenAI 兼容 API（国内端点）' },
+};
 
-function switchProvider(provider) {
-    currentProvider = provider;
-    // Update tabs
-    document.querySelectorAll('.tab[data-provider]').forEach(t => t.classList.remove('active'));
-    document.querySelector(`[data-provider="${provider}"]`).classList.add('active');
-    // Toggle config panels
-    document.getElementById('localConfig').classList.toggle('hidden', provider !== 'openai_compatible');
-    document.getElementById('anthropicConfig').classList.toggle('hidden', provider !== 'anthropic');
+// ==================== OCR Config ====================
+let ocrMode = '{{ llm_mode|default:"cloud" }}';
+let ocrProtocol = '{{ llm_provider|default:"openai_compatible" }}';
+
+function switchOcrMode(mode) {
+    ocrMode = mode;
+    document.querySelectorAll('[data-ocr-mode]').forEach(t => t.classList.toggle('active', t.dataset.ocrMode === mode));
+    document.getElementById('ocrLocalConfig').classList.toggle('hidden', mode !== 'local');
+    document.getElementById('ocrCloudConfig').classList.toggle('hidden', mode !== 'cloud');
 }
 
-function saveLLMConfig() {
-    const data = { llm_provider: currentProvider };
+function switchOcrProtocol(protocol) {
+    ocrProtocol = protocol;
+    document.querySelectorAll('[data-ocr-protocol]').forEach(t => t.classList.toggle('active', t.dataset.ocrProtocol === protocol));
+}
 
-    if (currentProvider === 'anthropic') {
-        const key = document.getElementById('anthropicApiKey').value;
-        if (key) data.anthropic_api_key = key;
+function applyOcrCloud(key) {
+    const p = CLOUD_PROVIDERS[key];
+    if (!p) { document.getElementById('ocrCloudNote').textContent = ''; return; }
+    document.getElementById('ocrCloudUrl').value = p.url;
+    document.getElementById('ocrCloudModel').value = p.ocr;
+    document.getElementById('ocrCloudNote').textContent = p.note + '  ·  推荐 OCR 模型: ' + p.ocr;
+}
+
+function saveOcrConfig() {
+    const data = {};
+
+    if (ocrMode === 'local') {
+        data.llm_mode = 'local';
+        data.llm_provider = ocrProtocol;
+        data.llm_api_url = document.getElementById('ocrLocalUrl').value;
+        data.llm_model = document.getElementById('ocrLocalModel').value;
+        const key = document.getElementById('ocrLocalKey').value;
+        if (key) data.llm_api_key = key;
+
+        if (!data.llm_api_url) { showToast('请输入 API 地址', 'error'); return; }
     } else {
-        const url = document.getElementById('localApiUrl').value;
-        const model = document.getElementById('localModel').value;
-        const key = document.getElementById('localApiKey').value;
-        
-        if (!url) {
-            showToast('请输入 API 地址', 'error');
-            return;
-        }
-        if (!model) {
-            showToast('请输入模型名称', 'error');
-            return;
-        }
-        
-        data.local_api_url = url;
-        data.local_model = model;
-        if (key) data.local_api_key = key;
+        data.llm_mode = 'cloud';
+        const providerKey = document.getElementById('ocrCloudProvider').value;
+        const preset = CLOUD_PROVIDERS[providerKey];
+        data.llm_provider = preset ? preset.protocol : 'openai_compatible';
+        data.llm_cloud_provider = providerKey;
+        data.llm_api_url = document.getElementById('ocrCloudUrl').value;
+        data.llm_model = document.getElementById('ocrCloudModel').value;
+        const key = document.getElementById('ocrCloudKey').value;
+        if (key) data.llm_api_key = key;
+
+        if (!data.llm_model) { showToast('请选择服务商或输入模型名称', 'error'); return; }
     }
 
     const maxTokens = document.getElementById('llmMaxTokens').value;
-    if (maxTokens) {
-        data.llm_max_tokens = maxTokens;
-    }
+    if (maxTokens) data.llm_max_tokens = maxTokens;
 
     fetch('{% url "assets:api_settings_save" %}', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': '{{ csrf_token }}',
-        },
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
         body: JSON.stringify(data),
     })
     .then(r => r.json())
     .then(result => {
-        if (result.success) {
-            showToast('AI 配置已保存', 'success');
-            setTimeout(() => location.reload(), 800);
-        } else {
-            showToast('保存失败: ' + result.error, 'error');
-        }
+        if (result.success) { showToast('OCR 配置已保存', 'success'); setTimeout(() => location.reload(), 800); }
+        else showToast('保存失败: ' + result.error, 'error');
     });
 }
 
-function testLLMConnection() {
-    showToast('正在测试连接...', 'info');
+function testConnection(target) {
+    let provider, apiUrl, apiKey;
 
-    const data = { provider: currentProvider };
-
-    if (currentProvider === 'openai_compatible') {
-        data.api_url = document.getElementById('localApiUrl').value;
-        data.api_key = document.getElementById('localApiKey').value;
-        if (!data.api_url) {
-            showToast('请先输入 API 地址', 'error');
-            return;
+    if (target === 'ocr') {
+        if (ocrMode === 'local') {
+            provider = ocrProtocol;
+            apiUrl = document.getElementById('ocrLocalUrl').value;
+            apiKey = document.getElementById('ocrLocalKey').value;
+        } else {
+            const pk = document.getElementById('ocrCloudProvider').value;
+            const preset = CLOUD_PROVIDERS[pk];
+            provider = preset ? preset.protocol : 'openai_compatible';
+            apiUrl = document.getElementById('ocrCloudUrl').value;
+            apiKey = document.getElementById('ocrCloudKey').value;
         }
-    } else {
-        data.api_key = document.getElementById('anthropicApiKey').value;
-        if (!data.api_key) {
-            showToast('请先输入 API Key', 'error');
-            return;
+    } else if (target === 'advisor') {
+        if (advMode === 'local') {
+            provider = advProtocol;
+            apiUrl = document.getElementById('advLocalUrl').value;
+            apiKey = document.getElementById('advLocalKey').value;
+        } else {
+            const pk = document.getElementById('advCloudProvider').value;
+            const preset = CLOUD_PROVIDERS[pk];
+            provider = preset ? preset.protocol : 'openai_compatible';
+            apiUrl = document.getElementById('advCloudUrl').value;
+            apiKey = document.getElementById('advCloudKey').value;
         }
     }
 
+    if (provider === 'openai_compatible' && !apiUrl) { showToast('请先输入 API 地址', 'error'); return; }
+    if (provider === 'anthropic' && !apiKey && !apiUrl) { showToast('请先输入 API Key', 'error'); return; }
+
+    showToast('正在测试连接...', 'info');
     fetch('{% url "assets:api_test_llm" %}', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': '{{ csrf_token }}',
-        },
-        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+        body: JSON.stringify({ target: target, provider: provider, api_url: apiUrl, api_key: apiKey }),
     })
     .then(r => r.json())
     .then(result => {
-        if (result.success) {
-            showToast('✅ ' + result.message, 'success');
-        } else {
-            showToast('❌ ' + result.error, 'error');
-        }
+        if (result.success) showToast('✅ ' + result.message, 'success');
+        else showToast('❌ ' + result.error, 'error');
     })
     .catch(e => showToast('请求失败: ' + e.message, 'error'));
 }
 
+// ==================== Advisor Config ====================
+let advMode = '{{ advisor_mode|default:"cloud" }}';
+let advProtocol = '{{ advisor_provider|default:"openai_compatible" }}';
+
+function switchAdvMode(mode) {
+    advMode = mode;
+    document.querySelectorAll('[data-adv-mode]').forEach(t => t.classList.toggle('active', t.dataset.advMode === mode));
+    document.getElementById('advLocalConfig').classList.toggle('hidden', mode !== 'local');
+    document.getElementById('advCloudConfig').classList.toggle('hidden', mode !== 'cloud');
+}
+
+function switchAdvProtocol(protocol) {
+    advProtocol = protocol;
+    document.querySelectorAll('[data-adv-protocol]').forEach(t => t.classList.toggle('active', t.dataset.advProtocol === protocol));
+}
+
+function applyAdvCloud(key) {
+    const p = CLOUD_PROVIDERS[key];
+    if (!p) { document.getElementById('advCloudNote').textContent = ''; return; }
+    document.getElementById('advCloudUrl').value = p.url;
+    document.getElementById('advCloudModel').value = p.adv;
+    document.getElementById('advCloudNote').textContent = p.note + '  ·  推荐旗舰模型: ' + p.adv;
+}
+
+function saveAdvConfig() {
+    const data = {};
+
+    if (advMode === 'local') {
+        data.advisor_mode = 'local';
+        data.advisor_llm_provider = advProtocol;
+        data.advisor_api_url = document.getElementById('advLocalUrl').value;
+        data.advisor_model = document.getElementById('advLocalModel').value;
+        const key = document.getElementById('advLocalKey').value;
+        if (key) data.advisor_api_key = key;
+
+        if (!data.advisor_api_url) { showToast('请输入 API 地址', 'error'); return; }
+    } else {
+        data.advisor_mode = 'cloud';
+        const providerKey = document.getElementById('advCloudProvider').value;
+        const preset = CLOUD_PROVIDERS[providerKey];
+        data.advisor_llm_provider = preset ? preset.protocol : 'openai_compatible';
+        data.advisor_cloud_provider = providerKey;
+        data.advisor_api_url = document.getElementById('advCloudUrl').value;
+        data.advisor_model = document.getElementById('advCloudModel').value;
+        const key = document.getElementById('advCloudKey').value;
+        if (key) data.advisor_api_key = key;
+
+        if (!data.advisor_model) { showToast('请选择服务商或输入模型名称', 'error'); return; }
+    }
+
+    const maxTokens = document.getElementById('advMaxTokens').value;
+    if (maxTokens) data.advisor_max_tokens = maxTokens;
+
+    fetch('{% url "assets:api_settings_save" %}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+        body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) { showToast('顾问配置已保存', 'success'); setTimeout(() => location.reload(), 800); }
+        else showToast('保存失败: ' + result.error, 'error');
+    });
+}
+
+// ==================== Init cloud provider dropdowns ====================
+(function() {
+    const ocrCP = '{{ llm_cloud_provider }}';
+    if (ocrCP) document.getElementById('ocrCloudProvider').value = ocrCP;
+    const advCP = '{{ advisor_cloud_provider }}';
+    if (advCP) document.getElementById('advCloudProvider').value = advCP;
+    // Show notes for pre-selected providers
+    if (ocrCP && CLOUD_PROVIDERS[ocrCP]) {
+        document.getElementById('ocrCloudNote').textContent = CLOUD_PROVIDERS[ocrCP].note;
+    }
+    if (advCP && CLOUD_PROVIDERS[advCP]) {
+        document.getElementById('advCloudNote').textContent = CLOUD_PROVIDERS[advCP].note;
+    }
+})();
+
+// ==================== Ratios ====================
 function updateRatioDisplay(slider) {
     const layerId = slider.dataset.layerId;
     document.getElementById('ratio-input-' + layerId).value = slider.value;
@@ -292,11 +577,11 @@ function recalcTotal() {
     document.querySelectorAll('[id^="ratio-input-"]').forEach(input => {
         total += parseFloat(input.value) || 0;
     });
-    
+
     const totalEl = document.getElementById('ratioTotal');
     const statusEl = document.getElementById('ratioStatus');
     totalEl.textContent = total.toFixed(1);
-    
+
     if (Math.abs(total - 100) < 0.01) {
         totalEl.style.color = 'var(--color-success)';
         statusEl.className = 'badge badge-success';
@@ -325,10 +610,7 @@ function saveRatios() {
 
     fetch('{% url "assets:api_settings_save" %}', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': '{{ csrf_token }}',
-        },
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
         body: JSON.stringify({ layers: layers }),
     })
     .then(r => r.json())
@@ -348,10 +630,7 @@ function importData(fileInput) {
             const data = JSON.parse(e.target.result);
             fetch('{% url "assets:api_import" %}', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token }}',
-                },
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
                 body: JSON.stringify(data),
             })
             .then(r => r.json())
@@ -370,7 +649,6 @@ function importData(fileInput) {
     reader.readAsText(file);
 }
 
-// Init total on load
 recalcTotal();
 </script>
 {% endblock %}

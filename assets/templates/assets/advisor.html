@@ -1,0 +1,504 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}AI 顾问{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between">
+    <div>
+        <h2>{% if is_history_detail %}📜 历史报告详情{% else %}AI 投资顾问{% endif %}</h2>
+        <p>{% if is_history_detail %}报告时间：{{ report.date|date:"Y-m-d H:i" }} · 评估时总资产 ¥{{ report.total_value|floatformat:0 }}{% else %}基于大模型的持仓评估与操作建议 · {{ holdings_count }} 笔持仓 · 总资产 ¥{{ total_value|floatformat:0 }}{% endif %}</p>
+    </div>
+    <div class="btn-group">
+        {% if is_history_detail %}
+        <a href="{% url 'assets:advisor_history' %}" class="btn btn-secondary">
+            🔙 返回列表
+        </a>
+        {% else %}
+        <a href="{% url 'assets:advisor_history' %}" class="btn btn-secondary" style="margin-right: 8px;">
+            🕛 历史记录
+        </a>
+        <button class="btn btn-primary" id="btnEvaluate" onclick="startEvaluation()" {% if not has_api_config %}disabled title="请先在设置中配置 LLM"{% endif %}>
+            🤖 开始评估
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+{% if not has_api_config and not is_history_detail %}
+<div class="card animate-in" style="border: 1px solid var(--color-warning); background: var(--color-warning-bg);">
+    <p style="margin: 0;">⚠️ 尚未配置 LLM 服务。请前往 <a href="{% url 'assets:settings' %}" style="color: var(--color-primary);">设置页面</a> 配置 API Key 后使用 AI 顾问功能。</p>
+</div>
+{% endif %}
+
+<style>
+/* Advisor-specific styles */
+.advisor-loading {
+    text-align: center;
+    padding: 60px 20px;
+}
+.advisor-loading .spinner {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.advisor-loading p {
+    margin-top: 16px;
+    color: var(--color-text-secondary);
+}
+
+/* Score ring */
+.score-ring {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto;
+}
+.score-ring svg {
+    transform: rotate(-90deg);
+}
+.score-ring .score-value {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 2rem;
+    font-weight: 800;
+    letter-spacing: -1px;
+}
+.score-ring .score-label {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Health badge */
+.health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+.health-healthy  { background: var(--color-success-bg); color: var(--color-success); }
+.health-caution  { background: var(--color-warning-bg); color: var(--color-warning); }
+.health-warning  { background: var(--color-warning-bg); color: var(--color-warning); }
+.health-critical { background: var(--color-danger-bg);  color: var(--color-danger); }
+
+/* Signal chips */
+.signal-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.signal-buy   { background: var(--color-success-bg); color: var(--color-success); }
+.signal-sell  { background: var(--color-danger-bg);  color: var(--color-danger); }
+.signal-hold  { background: rgba(255,255,255,0.06);  color: var(--color-text-secondary); }
+.signal-watch { background: var(--color-warning-bg); color: var(--color-warning); }
+
+/* Risk indicator */
+.risk-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+.risk-low      { background: var(--color-success); }
+.risk-medium   { background: var(--color-warning); }
+.risk-high     { background: hsl(20, 90%, 55%); }
+.risk-critical { background: var(--color-danger); }
+
+/* Holding evaluation card */
+.eval-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    padding: 16px 20px;
+    margin-bottom: 10px;
+    transition: border-color var(--transition-fast);
+}
+.eval-card:hover {
+    border-color: var(--color-border-hover);
+}
+.eval-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.eval-card-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.eval-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.eval-card-comment {
+    color: var(--color-text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.6;
+}
+.eval-card-reason {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+/* Summary cards */
+.summary-grid {
+    display: grid;
+    grid-template-columns: 200px 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+}
+.summary-score-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    padding: 24px;
+    text-align: center;
+}
+.summary-list-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    padding: 20px;
+}
+.summary-list-card h4 {
+    font-size: 0.82rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+}
+.summary-list-card ul {
+    list-style: none;
+    padding: 0;
+}
+.summary-list-card li {
+    padding: 6px 0;
+    font-size: 0.88rem;
+    color: var(--color-text-secondary);
+    border-bottom: 1px solid var(--color-border);
+}
+.summary-list-card li:last-child { border-bottom: none; }
+.summary-list-card li::before {
+    margin-right: 8px;
+}
+.highlight-item::before { content: '🎉'; }
+.warning-item::before  { content: '⚠️'; }
+
+.advice-box {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    margin-bottom: 24px;
+    font-size: 0.92rem;
+    line-height: 1.7;
+    color: var(--color-text-secondary);
+}
+.advice-box strong {
+    color: var(--color-text);
+}
+
+/* Empty state */
+.advisor-empty {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--color-text-muted);
+}
+.advisor-empty .empty-icon {
+    font-size: 3rem;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+.advisor-empty p {
+    font-size: 0.92rem;
+}
+
+@media (max-width: 768px) {
+    .summary-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+
+<!-- Results Container -->
+<div id="advisorResults">
+    {% if holdings_count == 0 %}
+    <div class="advisor-empty card animate-in">
+        <div class="empty-icon">📭</div>
+        <p>暂无持仓数据，请先在 <a href="{% url 'assets:holdings' %}" style="color: var(--color-primary);">资产管理</a> 中添加持仓。</p>
+    </div>
+    {% else %}
+    <div class="advisor-empty card animate-in">
+        <div class="empty-icon">🤖</div>
+        <p>点击「开始评估」，AI 将分析您的 {{ holdings_count }} 笔持仓并给出专业建议。</p>
+        <p style="margin-top: 8px; font-size: 0.8rem; color: var(--color-text-muted);">评估过程需要调用大模型，通常耗时 10-30 秒</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+const SIGNAL_MAP = {
+    buy:   { label: '买入', icon: '📈', cls: 'signal-buy' },
+    sell:  { label: '卖出', icon: '📉', cls: 'signal-sell' },
+    hold:  { label: '持有', icon: '✊', cls: 'signal-hold' },
+    watch: { label: '观望', icon: '👀', cls: 'signal-watch' },
+};
+
+const HEALTH_MAP = {
+    healthy:  { label: '健康', icon: '💚', cls: 'health-healthy' },
+    caution:  { label: '注意', icon: '💛', cls: 'health-caution' },
+    warning:  { label: '警告', icon: '🟠', cls: 'health-warning' },
+    critical: { label: '危险', icon: '🔴', cls: 'health-critical' },
+};
+
+const RISK_LABELS = {
+    low: '低风险', medium: '中风险', high: '高风险', critical: '极高风险',
+};
+
+function getScoreColor(score) {
+    if (score >= 80) return 'var(--color-success)';
+    if (score >= 60) return 'var(--color-warning)';
+    return 'var(--color-danger)';
+}
+
+function startEvaluation() {
+    const btn = document.getElementById('btnEvaluate');
+    const container = document.getElementById('advisorResults');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ 评估中...';
+
+    container.innerHTML = `
+        <div class="card animate-in">
+            <div class="advisor-loading">
+                <div class="spinner"></div>
+                <p>正在分析您的投资组合，请稍候...</p>
+                <p style="font-size: 0.78rem; color: var(--color-text-muted); margin-top: 4px;">AI 正在评估 {{ holdings_count }} 笔持仓的盈亏、仓位、风险</p>
+            </div>
+        </div>
+    `;
+
+    fetch('{% url "assets:api_advisor_evaluate" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: '{}',
+    })
+    .then(r => r.json())
+    .then(result => {
+        btn.disabled = false;
+        btn.textContent = '🤖 重新评估';
+
+        if (result.success && result.data) {
+            renderResults(result.data);
+        } else {
+            container.innerHTML = `
+                <div class="card animate-in" style="border: 1px solid var(--color-danger); background: var(--color-danger-bg);">
+                    <p style="margin: 0;">❌ 评估失败：${result.error || '未知错误'}</p>
+                </div>
+            `;
+            showToast('评估失败: ' + (result.error || '未知错误'), 'error');
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.textContent = '🤖 重新评估';
+        container.innerHTML = `
+            <div class="card animate-in" style="border: 1px solid var(--color-danger); background: var(--color-danger-bg);">
+                <p style="margin: 0;">❌ 网络错误：${err.message}</p>
+            </div>
+        `;
+        showToast('网络错误', 'error');
+    });
+}
+
+function renderResults(data) {
+    const container = document.getElementById('advisorResults');
+    const summary = data.portfolio_summary || {};
+    const holdings = data.holdings || [];
+
+    const score = summary.score || 0;
+    const color = getScoreColor(score);
+    const health = HEALTH_MAP[summary.overall_health] || HEALTH_MAP.caution;
+
+    // Calculate stroke dasharray for score ring
+    const circumference = 2 * Math.PI * 50;
+    const dashOffset = circumference - (score / 100) * circumference;
+
+    let html = '';
+
+    // Summary section
+    html += `<div class="summary-grid animate-in">`;
+
+    // Score card
+    html += `
+        <div class="summary-score-card">
+            <div class="score-ring">
+                <svg width="120" height="120" viewBox="0 0 120 120">
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="var(--color-border)" stroke-width="8"/>
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="${color}" stroke-width="8"
+                        stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"
+                        stroke-linecap="round"/>
+                </svg>
+                <span class="score-value" style="color: ${color};">${score}</span>
+            </div>
+            <div style="margin-top: 12px;">
+                <span class="health-badge ${health.cls}">${health.icon} ${health.label}</span>
+            </div>
+        </div>
+    `;
+
+    // Highlights
+    const highlights = summary.highlights || [];
+    html += `<div class="summary-list-card">
+        <h4>🎉 亮点</h4>
+        <ul>`;
+    if (highlights.length > 0) {
+        highlights.forEach(h => {
+            html += `<li class="highlight-item">${h}</li>`;
+        });
+    } else {
+        html += `<li style="color: var(--color-text-muted);">暂无亮点</li>`;
+    }
+    html += `</ul></div>`;
+
+    // Warnings
+    const warnings = summary.warnings || [];
+    html += `<div class="summary-list-card">
+        <h4>⚠️ 风险提示</h4>
+        <ul>`;
+    if (warnings.length > 0) {
+        warnings.forEach(w => {
+            html += `<li class="warning-item">${w}</li>`;
+        });
+    } else {
+        html += `<li style="color: var(--color-text-muted);">暂无风险提示</li>`;
+    }
+    html += `</ul></div>`;
+
+    html += `</div>`;
+
+    // Advice box
+    if (summary.advice) {
+        html += `<div class="advice-box animate-in"><strong>💡 综合建议：</strong>${summary.advice}</div>`;
+    }
+
+    // Holding evaluations
+    html += `<div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 1rem; color: var(--color-text-secondary);">逐笔持仓评估</h3>
+             </div>`;
+
+    // Calculate signal counts
+    const signalCounts = { 'buy': 0, 'sell': 0, 'hold': 0, 'watch': 0 };
+    holdings.forEach(h => {
+        let s = SIGNAL_MAP[h.signal] ? h.signal : 'hold';
+        signalCounts[s]++;
+    });
+
+    html += `<div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;" id="evalFilters">`;
+    html += `<button onclick="filterEvals('all')" class="btn btn-sm btn-primary filter-btn" data-filter="all">全部 (${holdings.length})</button>`;
+    ['buy', 'sell', 'hold', 'watch'].forEach(s => {
+        if (signalCounts[s] > 0) {
+            const sm = SIGNAL_MAP[s];
+            html += `<button onclick="filterEvals('${s}')" class="btn btn-sm btn-secondary filter-btn" data-filter="${s}" style="display:flex; align-items:center; gap:4px;">${sm.icon} ${sm.label} (${signalCounts[s]})</button>`;
+        }
+    });
+    html += `</div><div id="evalCardsContainer">`;
+
+    holdings.forEach((h, i) => {
+        let s = SIGNAL_MAP[h.signal] ? h.signal : 'hold';
+        const sig = SIGNAL_MAP[s];
+        const riskLabel = RISK_LABELS[h.risk_level] || '未知';
+        const riskCls = 'risk-' + (h.risk_level || 'low');
+
+        html += `
+            <div class="eval-card animate-in stagger-${Math.min(i, 5)}" data-signal="${s}">
+                <div class="eval-card-header">
+                    <span class="eval-card-name">${h.name}</span>
+                    <div class="eval-card-meta">
+                        <span class="signal-chip ${sig.cls}">${sig.icon} ${sig.label}</span>
+                        <span style="font-size: 0.8rem; color: var(--color-text-muted);"><span class="risk-dot ${riskCls}"></span>${riskLabel}</span>
+                    </div>
+                </div>
+                <div class="eval-card-comment">${h.comment || ''}</div>
+                ${h.signal_reason ? `<div class="eval-card-reason">${sig.icon} ${h.signal_reason}</div>` : ''}
+            </div>
+        `;
+    });
+
+    html += `</div>`; // End evalCardsContainer
+
+    // Disclaimer
+    html += `
+        <div style="margin-top: 24px; padding: 12px 16px; background: var(--color-surface); border-radius: var(--border-radius-sm); font-size: 0.78rem; color: var(--color-text-muted); text-align: center;">
+            ⚠️ 以上评估由 AI 生成，仅供参考，不构成任何投资建议。投资有风险，决策需谨慎。
+        </div>
+    `;
+
+    container.innerHTML = html;
+}
+
+window.filterEvals = function(signal) {
+    document.querySelectorAll('#evalFilters .filter-btn').forEach(b => {
+        if (b.dataset.filter === signal) {
+            b.classList.remove('btn-secondary');
+            b.classList.add('btn-primary');
+        } else {
+            b.classList.remove('btn-primary');
+            b.classList.add('btn-secondary');
+        }
+    });
+
+    document.querySelectorAll('#evalCardsContainer .eval-card').forEach(card => {
+        if (signal === 'all' || card.dataset.signal === signal) {
+            card.style.display = 'block';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+};
+
+// Auto-load latest or history report if data is provided from backend
+document.addEventListener('DOMContentLoaded', function() {
+    let reportData = null;
+    {% if report_json %}
+        reportData = {{ report_json|safe }};
+    {% elif latest_report_json %}
+        reportData = {{ latest_report_json|safe }};
+    {% endif %}
+
+    if (reportData) {
+        // Change button text contextually if it's not history mode
+        const btn = document.getElementById('btnEvaluate');
+        if (btn) btn.textContent = '🤖 重新评估';
+        renderResults(reportData);
+    }
+});
+</script>
+{% endblock %}

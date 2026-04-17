@@ -7,6 +7,7 @@
 import base64
 import json
 from pathlib import Path
+import time
 
 import anthropic
 import httpx
@@ -279,30 +280,44 @@ def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str,
     if base_url:
         kwargs['base_url'] = base_url
     client = anthropic.Anthropic(**kwargs)
-    message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[
-            {
-                "role": "user",
-                "content": [
+    last_err = None
+    for attempt in range(3):
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[
                     {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_data,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt or RECOGNITION_PROMPT,
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": image_data,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt or RECOGNITION_PROMPT,
+                            }
+                        ],
                     }
                 ],
-            }
-        ],
-    )
-    return message.content[0].text
+            )
+            return message.content[0].text
+        except getattr(anthropic, 'APIStatusError', Exception) as e:
+            if getattr(e, 'status_code', 0) in (429, 500, 502, 503, 504):
+                last_err = e
+                time.sleep(2 * (attempt + 1))
+            else:
+                raise e
+        except Exception as e:
+            last_err = e
+            time.sleep(1 * (attempt + 1))
+
+    raise Exception(f'网络请求持续失败，可能由于代理或防火墙引起 (已重试3次): {str(last_err)}')
 
 
 def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
@@ -315,7 +330,7 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
     # 确保 URL 以 /chat/completions 结尾
     url = api_url.rstrip('/')
     if not url.endswith('/chat/completions'):
-        if url.endswith('/v1'):
+        if url.endswith('/v1') or url.endswith('/v4') or url.endswith('/openai'):
             url += '/chat/completions'
         elif not url.endswith('/completions'):
             url += '/v1/chat/completions'
@@ -350,16 +365,30 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
         ],
     }
 
-    response = httpx.post(url, json=payload, headers=headers, timeout=300.0)
-    response.raise_for_status()
-    result = response.json()
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=300.0)
+            response.raise_for_status()
+            result = response.json()
 
-    # 提取内容：优先 content，如果为空则尝试 reasoning_content
-    content = result["choices"][0]["message"].get("content", "")
-    if not content or not content.strip():
-        content = result["choices"][0]["message"].get("reasoning_content", "")
+            # 提取内容：优先 content，如果为空则尝试 reasoning_content
+            content = result["choices"][0]["message"].get("content", "")
+            if not content or not content.strip():
+                content = result["choices"][0]["message"].get("reasoning_content", "")
 
-    return content
+            return content
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (429, 500, 502, 503, 504):
+                last_err = e
+                time.sleep(2 * (attempt + 1))
+            else:
+                raise e
+        except Exception as e:
+            last_err = e
+            time.sleep(1 * (attempt + 1))
+
+    raise Exception(f'网络连接被异常断开，可能受当地代理软件、节点或防火墙影响 (已重试3次): {str(last_err)}')
 
 
 def recognize_screenshot(image_path: str, api_key: str,

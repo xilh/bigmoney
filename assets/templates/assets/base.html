@@ -39,6 +39,10 @@
                     <span class="nav-icon">📈</span>
                     <span>历史记录</span>
                 </a>
+                <a href="{% url 'assets:advisor' %}" class="nav-item {% if request.resolver_match.url_name == 'advisor' %}active{% endif %}">
+                    <span class="nav-icon">🤖</span>
+                    <span>AI 顾问</span>
+                </a>
                 <a href="{% url 'assets:checklist' %}" class="nav-item {% if request.resolver_match.url_name == 'checklist' %}active{% endif %}">
                     <span class="nav-icon">✅</span>
                     <span>定期检视</span>

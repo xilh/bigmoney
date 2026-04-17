@@ -12,7 +12,8 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
-    Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES
+    Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES,
+    EvaluationReport
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
@@ -289,6 +290,7 @@ def settings_page(request):
     advisor_api_key = Setting.get('advisor_api_key', '') or Setting.get('advisor_anthropic_api_key', '') or Setting.get('advisor_local_api_key', '')
     advisor_model = Setting.get('advisor_model', '') or Setting.get('advisor_anthropic_model', '') or Setting.get('advisor_local_model', '')
     advisor_cloud_provider = Setting.get('advisor_cloud_provider', '')
+    advisor_max_tokens = Setting.get('advisor_max_tokens', '8192')
 
     context = {
         'layers': layers,
@@ -308,6 +310,7 @@ def settings_page(request):
         'masked_advisor_key': mask_key(advisor_api_key),
         'advisor_model': advisor_model,
         'advisor_cloud_provider': advisor_cloud_provider,
+        'advisor_max_tokens': advisor_max_tokens,
     }
     return render(request, 'assets/settings.html', context)
 
@@ -693,6 +696,8 @@ def api_settings_save(request):
                      'advisor_api_key', 'advisor_model', 'advisor_cloud_provider'):
             if key in data:
                 Setting.set(key, data[key])
+        if 'advisor_max_tokens' in data:
+            Setting.set('advisor_max_tokens', str(data['advisor_max_tokens']))
 
         if 'layers' in data:
             for layer_data in data['layers']:
@@ -806,11 +811,44 @@ def advisor_page(request):
     else:
         has_api_config = bool(advisor_url)
 
+    # Fetch latest report to load automatically
+    latest_report = EvaluationReport.objects.first()
+    latest_report_json = None
+    if latest_report:
+        latest_report_json = json.dumps({
+            'portfolio_summary': latest_report.summary_data,
+            'holdings': latest_report.holdings_data,
+            'date': latest_report.date.isoformat()
+        })
+
     context = {
         'total_value': total_value,
         'layers_data': layers_data,
         'holdings_count': holdings_count,
         'has_api_config': has_api_config,
+        'latest_report_json': latest_report_json,
+    }
+    return render(request, 'assets/advisor.html', context)
+
+def advisor_history(request):
+    """AI 顾问历史报告列表"""
+    reports = EvaluationReport.objects.all()
+    return render(request, 'assets/advisor_history.html', {'reports': reports})
+
+def advisor_report_detail(request, report_id):
+    """AI 顾问单独报告详情页（可以复用 advisor.html 或独立的只读页面）"""
+    report = get_object_or_404(EvaluationReport, id=report_id)
+    report_json = json.dumps({
+        'portfolio_summary': report.summary_data,
+        'holdings': report.holdings_data,
+        'date': report.date.isoformat()
+    })
+    
+    # Passing flag to template so we can render it in read-only mode
+    context = {
+        'report': report,
+        'report_json': report_json,
+        'is_history_detail': True
     }
     return render(request, 'assets/advisor.html', context)
 
@@ -845,6 +883,24 @@ def api_advisor_evaluate(request):
             })
 
         result = evaluate_portfolio(layers_data, holdings_data, total_value)
+
+        # 成功时保存报告
+        if result.get('success') and 'data' in result:
+            data = result['data']
+            summary_data = data.get('portfolio_summary', {})
+            holdings_d = data.get('holdings', [])
+            score = summary_data.get('score', 0)
+            overall_health = summary_data.get('overall_health', 'unknown')
+
+            report = EvaluationReport.objects.create(
+                total_value=total_value,
+                score=score,
+                overall_health=overall_health,
+                summary_data=summary_data,
+                holdings_data=holdings_d
+            )
+            result['data']['date'] = report.date.isoformat()
+
         return JsonResponse(result)
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
@@ -860,6 +916,13 @@ def api_test_llm(request):
         provider = data.get('provider', 'openai_compatible')
         api_url = data.get('api_url', '')
         api_key = data.get('api_key', '')
+        target = data.get('target', '')
+
+        if not api_key:
+            if target == 'ocr':
+                api_key = Setting.get('llm_api_key', '') or Setting.get('anthropic_api_key', '') or Setting.get('local_api_key', '')
+            elif target == 'advisor':
+                api_key = Setting.get('advisor_api_key', '') or Setting.get('advisor_anthropic_api_key', '') or Setting.get('advisor_local_api_key', '')
 
         if provider == 'openai_compatible':
             if not api_url:

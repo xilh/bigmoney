@@ -13,6 +13,8 @@ urlpatterns = [
     path('checklist/', views.checklist_page, name='checklist'),
     path('settings/', views.settings_page, name='settings'),
     path('advisor/', views.advisor_page, name='advisor'),
+    path('advisor/history/', views.advisor_history, name='advisor_history'),
+    path('advisor/history/<int:report_id>/', views.advisor_report_detail, name='advisor_report_detail'),
 
     # API
     path('api/holding/create/', views.api_holding_create, name='api_holding_create'),

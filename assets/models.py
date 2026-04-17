@@ -215,3 +215,21 @@ class Setting(models.Model):
     def set(cls, key, value):
         obj, _ = cls.objects.update_or_create(key=key, defaults={'value': value})
         return obj
+
+
+class EvaluationReport(models.Model):
+    """AI顾问评估报告"""
+    date = models.DateTimeField('评估时间', default=timezone.now)
+    total_value = models.DecimalField('总资产(元)', max_digits=18, decimal_places=2, default=0)
+    score = models.IntegerField('健康评分', default=0)
+    overall_health = models.CharField('整体健康度', max_length=50)
+    summary_data = models.JSONField('总结数据', default=dict)
+    holdings_data = models.JSONField('持仓评估', default=list)
+
+    class Meta:
+        ordering = ['-date', '-id']
+        verbose_name = '评估报告'
+        verbose_name_plural = '评估报告'
+
+    def __str__(self):
+        return f'{self.date.strftime("%Y-%m-%d %H:%M")} - 分数: {self.score}'
