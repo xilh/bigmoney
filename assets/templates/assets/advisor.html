@@ -353,6 +353,28 @@ function renderResults(data) {
 
     let html = '';
 
+    if (data.date) {
+        const dateObj = new Date(data.date);
+        const dateStr = dateObj.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        
+        const now = new Date();
+        const diffSecs = Math.floor((now - dateObj) / 1000);
+        let relativeTime = '';
+        if (diffSecs < 60) relativeTime = '刚刚';
+        else if (diffSecs < 3600) relativeTime = Math.floor(diffSecs / 60) + ' 分钟前';
+        else if (diffSecs < 86400) relativeTime = Math.floor(diffSecs / 3600) + ' 小时前';
+        else relativeTime = Math.floor(diffSecs / 86400) + ' 天前';
+
+        html += `
+            <div class="animate-in" style="margin-bottom: 24px; background: rgba(var(--color-primary-rgb), 0.05); border-left: 4px solid var(--color-primary); border-radius: var(--border-radius-sm); padding: 14px 18px; display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 1.4rem;">⏱️</span>
+                <div>
+                    <div style="font-weight: 600; font-size: 0.95rem; color: var(--color-text);">本份诊断报告生成于 <span style="color: var(--color-primary);">${relativeTime}</span></div>
+                    <div style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 4px;">系统确切记录时间：${dateStr}</div>
+                </div>
+            </div>`;
+    }
+
     // Summary section
     html += `<div class="summary-grid animate-in">`;
 
