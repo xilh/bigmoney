@@ -15,7 +15,12 @@ import httpx
 # 识别提示词模板
 RECOGNITION_PROMPT = """你是一个专业的金融数据提取助手。请仔细分析这张持仓/理财截图，提取所有资产持仓信息。
 
-首先，请根据截图的 UI 界面特征判断这是哪个 App/平台的截图（如：招商银行、支付宝、天天基金、蛋卷基金、雪球、同花顺、东方财富、微信理财通、京东金融、中国银行等）。
+首先，请根据截图的 UI 界面特征（App 图标、导航栏文字、配色风格、底部 Tab 等）判断这是哪个 App/平台的截图。
+⚠️ 平台判断规则（按优先级）：
+1. 优先从 UI 界面元素识别平台
+2. 如果 UI 无法确定，但截图中的产品组合与已有数据中某个平台的持仓高度吻合，可以推断为该平台
+3. 绝对不要从单个产品名称猜测平台（例如不能因为看到"招商白酒"就判断平台是"招商银行"）
+4. 如果以上方法都无法确定，platform 填空字符串
 
 请返回一个 JSON 对象，格式如下：
 {
@@ -64,6 +69,12 @@ RECOGNITION_PROMPT = """你是一个专业的金融数据提取助手。请仔�
 5. 如果是股票，quantity 是股数，current_price 是当前股价
 6. 金额单位统一为人民币元
 7. 只返回上述 JSON 对象，不要包含其他文字或 markdown 格式标记
+
+⚠️ 重要：去重匹配规则
+为避免因 OCR 误差导致重复录入，请将识别到的产品名称、平台名称、资产类型与下面的已有数据进行模糊匹配。
+如果识别结果与已有数据高度相似（仅有个别字差异、多/少空格、简称vs全称等），请直接使用已有数据中的名称，而非 OCR 原始结果。
+
+$EXISTING_DATA_BLOCK$
 
 请返回纯 JSON 对象："""
 
@@ -241,9 +252,33 @@ def _repair_truncated_json(text: str) -> list:
     return None
 
 
-def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str, max_tokens: int = 2048) -> str:
-    """调用 Anthropic Claude API"""
-    client = anthropic.Anthropic(api_key=api_key)
+def _build_existing_data_block(existing_holdings: list[dict] | None) -> str:
+    """构建已有数据块，嵌入到提示词中"""
+    if not existing_holdings:
+        return "（当前无已有持仓数据）"
+
+    names = sorted(set(h['name'] for h in existing_holdings if h.get('name')))
+    platforms = sorted(set(h['platform'] for h in existing_holdings if h.get('platform')))
+    categories = sorted(set(h['asset_type'] for h in existing_holdings if h.get('asset_type')))
+
+    lines = []
+    if names:
+        lines.append(f"已有产品名称：{', '.join(names)}")
+    if platforms:
+        lines.append(f"已有平台名称：{', '.join(platforms)}")
+    if categories:
+        lines.append(f"已有资产类型：{', '.join(categories)}")
+    return '\n'.join(lines) if lines else "（当前无已有持仓数据）"
+
+
+def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str,
+                    max_tokens: int = 2048, base_url: str = '',
+                    prompt: str = '') -> str:
+    """调用 Anthropic 协议 API（支持 Anthropic 官方、LM Studio 等兼容端点）"""
+    kwargs = {'api_key': api_key or 'not-needed'}
+    if base_url:
+        kwargs['base_url'] = base_url
+    client = anthropic.Anthropic(**kwargs)
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -261,7 +296,7 @@ def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str, 
                     },
                     {
                         "type": "text",
-                        "text": RECOGNITION_PROMPT,
+                        "text": prompt or RECOGNITION_PROMPT,
                     }
                 ],
             }
@@ -271,7 +306,8 @@ def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str, 
 
 
 def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
-                            api_url: str, model: str, max_tokens: int = 2048) -> str:
+                            api_url: str, model: str, max_tokens: int = 2048,
+                            prompt: str = '') -> str:
     """
     调用 OpenAI 兼容 API（支持 Ollama、vLLM、LM Studio、OpenAI 等）
     使用 OpenAI Chat Completions 格式，图片通过 base64 data URL 传递
@@ -307,7 +343,7 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
                     },
                     {
                         "type": "text",
-                        "text": RECOGNITION_PROMPT,
+                        "text": prompt or RECOGNITION_PROMPT,
                     }
                 ],
             }
@@ -330,40 +366,49 @@ def recognize_screenshot(image_path: str, api_key: str,
                          provider: str = 'anthropic',
                          api_url: str = '',
                          model: str = '',
-                         max_tokens: int = 2048) -> dict:
+                         max_tokens: int = 2048,
+                         existing_holdings: list[dict] | None = None) -> dict:
     """
     识别持仓截图
 
     Args:
         image_path: 图片文件路径
         api_key: API Key
-        provider: 'anthropic' 或 'openai_compatible'（本地大模型/OpenAI 等）
-        api_url: OpenAI 兼容 API 的 Base URL（仅 openai_compatible 需要）
+        provider: 'anthropic' 或 'openai_compatible'
+        api_url: API Base URL（openai_compatible 必填；anthropic 选填，填则覆盖默认端点）
         model: 模型名称
         max_tokens: 大模型返回的最大限制
+        existing_holdings: 已有持仓列表，用于去重匹配
 
     Returns:
         dict: {"success": bool, "data": list, "platform": str, "error": str}
     """
-    if provider == 'anthropic' and not api_key:
-        return {"success": False, "data": [], "platform": "", "error": "未配置 Anthropic API Key，请在设置中配置"}
+    if provider == 'anthropic' and not api_key and not api_url:
+        return {"success": False, "data": [], "platform": "", "error": "未配置 AI 模型，请在设置中配置"}
     if provider == 'openai_compatible' and not api_url:
-        return {"success": False, "data": [], "platform": "", "error": "未配置本地模型 API 地址，请在设置中配置"}
+        return {"success": False, "data": [], "platform": "", "error": "未配置 API 地址，请在设置中配置"}
 
     try:
         image_data, media_type = _read_image(image_path)
+
+        # 构建包含已有数据的提示词
+        data_block = _build_existing_data_block(existing_holdings)
+        prompt = RECOGNITION_PROMPT.replace('$EXISTING_DATA_BLOCK$', data_block)
 
         if provider == 'anthropic':
             response_text = _call_anthropic(
                 image_data, media_type, api_key,
                 model or 'claude-sonnet-4-20250514',
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                base_url=api_url,
+                prompt=prompt,
             )
         else:
             response_text = _call_openai_compatible(
                 image_data, media_type, api_key,
                 api_url, model or 'gpt-4o',
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                prompt=prompt,
             )
 
         result = _extract_json(response_text)

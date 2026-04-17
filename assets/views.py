@@ -18,6 +18,7 @@ from .services.ocr import recognize_screenshot
 from .services.rebalance import (
     calculate_rebalance, allocate_new_funds, DRAWDOWN_PROTOCOLS
 )
+from .services.advisor import evaluate_portfolio
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -123,11 +124,13 @@ def holdings_page(request):
 def upload_page(request):
     """截图上传页面"""
     uploads = Upload.objects.all()[:20]
-    provider = Setting.get('llm_provider', 'anthropic')
+    provider = Setting.get('llm_provider', 'openai_compatible')
+    api_key = Setting.get('llm_api_key', '')
+    api_url = Setting.get('llm_api_url', '')
     if provider == 'anthropic':
-        has_api_config = bool(Setting.get('anthropic_api_key'))
+        has_api_config = bool(api_key) or bool(api_url)
     else:
-        has_api_config = bool(Setting.get('local_api_url'))
+        has_api_config = bool(api_url)
     layers = AssetLayer.objects.all()
 
     existing_platforms = list(
@@ -258,31 +261,46 @@ def settings_page(request):
     """设置页面"""
     layers = AssetLayer.objects.all()
 
-    # LLM 配置
-    provider = Setting.get('llm_provider', 'anthropic')
-    anthropic_key = Setting.get('anthropic_api_key', '')
-    local_api_url = Setting.get('local_api_url', '')
-    local_api_key = Setting.get('local_api_key', '')
-    local_model = Setting.get('local_model', '')
-
-    # Mask keys for display
     def mask_key(key):
         if not key:
             return ''
         return key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
 
+    # OCR config (unified keys, fallback to old keys for migration)
+    llm_mode = Setting.get('llm_mode', 'cloud')
+    provider = Setting.get('llm_provider', '') or Setting.get('llm_provider', 'openai_compatible')
+    api_url = Setting.get('llm_api_url', '') or Setting.get('local_api_url', '') or Setting.get('anthropic_base_url', '')
+    api_key = Setting.get('llm_api_key', '') or Setting.get('anthropic_api_key', '') or Setting.get('local_api_key', '')
+    model = Setting.get('llm_model', '') or Setting.get('anthropic_model', '') or Setting.get('local_model', '')
     llm_max_tokens = Setting.get('llm_max_tokens', '2048')
+    llm_cloud_provider = Setting.get('llm_cloud_provider', '')
+
+    # Advisor config (unified keys, fallback to old keys)
+    advisor_mode = Setting.get('advisor_mode', 'cloud')
+    advisor_provider = Setting.get('advisor_llm_provider', 'openai_compatible')
+    advisor_api_url = Setting.get('advisor_api_url', '') or Setting.get('advisor_anthropic_base_url', '') or Setting.get('advisor_local_api_url', '')
+    advisor_api_key = Setting.get('advisor_api_key', '') or Setting.get('advisor_anthropic_api_key', '') or Setting.get('advisor_local_api_key', '')
+    advisor_model = Setting.get('advisor_model', '') or Setting.get('advisor_anthropic_model', '') or Setting.get('advisor_local_model', '')
+    advisor_cloud_provider = Setting.get('advisor_cloud_provider', '')
 
     context = {
         'layers': layers,
+        'llm_mode': llm_mode,
         'llm_provider': provider,
-        'has_anthropic_key': bool(anthropic_key),
-        'masked_anthropic_key': mask_key(anthropic_key),
-        'local_api_url': local_api_url,
-        'has_local_key': bool(local_api_key),
-        'masked_local_key': mask_key(local_api_key),
-        'local_model': local_model,
+        'llm_api_url': api_url,
+        'has_api_key': bool(api_key),
+        'masked_api_key': mask_key(api_key),
+        'llm_model': model,
         'llm_max_tokens': llm_max_tokens,
+        'llm_cloud_provider': llm_cloud_provider,
+        # Advisor
+        'advisor_mode': advisor_mode,
+        'advisor_provider': advisor_provider,
+        'advisor_api_url': advisor_api_url,
+        'has_advisor_key': bool(advisor_api_key),
+        'masked_advisor_key': mask_key(advisor_api_key),
+        'advisor_model': advisor_model,
+        'advisor_cloud_provider': advisor_cloud_provider,
     }
     return render(request, 'assets/settings.html', context)
 
@@ -400,30 +418,31 @@ def api_upload_screenshot(request):
             status='processing',
         )
 
-        # 获取 LLM 配置
-        provider = Setting.get('llm_provider', 'anthropic')
-        if provider == 'anthropic':
-            api_key = Setting.get('anthropic_api_key')
-            api_url = ''
-            model = ''
-            if not api_key:
-                upload.status = 'failed'
-                upload.error_message = '未配置 Anthropic API Key'
-                upload.save()
-                return JsonResponse({'success': False, 'error': '未配置 Anthropic API Key，请先在设置中配置'}, status=400)
-        else:
-            api_key = Setting.get('local_api_key', '')
-            api_url = Setting.get('local_api_url', '')
-            model = Setting.get('local_model', '')
-            if not api_url:
-                upload.status = 'failed'
-                upload.error_message = '未配置本地模型 API 地址'
-                upload.save()
-                return JsonResponse({'success': False, 'error': '未配置本地模型 API 地址，请先在设置中配置'}, status=400)
+        # 获取 LLM 配置（统一键名）
+        provider = Setting.get('llm_provider', 'openai_compatible')
+        api_key = Setting.get('llm_api_key', '')
+        api_url = Setting.get('llm_api_url', '')
+        model = Setting.get('llm_model', '')
+
+        if provider == 'anthropic' and not api_key and not api_url:
+            upload.status = 'failed'
+            upload.error_message = '未配置 AI 模型，请先在设置中配置'
+            upload.save()
+            return JsonResponse({'success': False, 'error': '未配置 AI 模型，请先在设置中配置'}, status=400)
+        elif provider == 'openai_compatible' and not api_url:
+            upload.status = 'failed'
+            upload.error_message = '未配置 API 地址，请先在设置中配置'
+            upload.save()
+            return JsonResponse({'success': False, 'error': '未配置 API 地址，请先在设置中配置'}, status=400)
 
         # 获取保存后的文件路径
         image_path = os.path.join(django_settings.MEDIA_ROOT, upload.image.name)
         llm_max_tokens = int(Setting.get('llm_max_tokens', '2048'))
+
+        # 查询已有持仓数据，传给 LLM 做去重匹配
+        existing_holdings = list(
+            Holding.objects.values('name', 'platform', 'asset_type').distinct()
+        )
 
         result = recognize_screenshot(
             image_path, api_key,
@@ -431,6 +450,7 @@ def api_upload_screenshot(request):
             api_url=api_url,
             model=model,
             max_tokens=llm_max_tokens,
+            existing_holdings=existing_holdings,
         )
 
         if result['success']:
@@ -449,6 +469,7 @@ def api_upload_screenshot(request):
             'data': result['data'],
             'platform': result.get('platform', ''),
             'error': result.get('error', ''),
+            'existing_holdings': existing_holdings,
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
@@ -471,6 +492,7 @@ def api_confirm_upload(request):
             upload.save()
 
         created_count = 0
+        updated_count = 0
         for item in items:
             layer_id = item.get('layer_id')
             if not layer_id:
@@ -512,6 +534,7 @@ def api_confirm_upload(request):
                 holding.profit_loss_pct = profit_loss_pct
                 holding.source = 'screenshot'
                 holding.save()
+                updated_count += 1
             else:
                 # 创建新持仓
                 holding = Holding.objects.create(
@@ -539,7 +562,7 @@ def api_confirm_upload(request):
 
             created_count += 1
 
-        return JsonResponse({'success': True, 'created': created_count})
+        return JsonResponse({'success': True, 'created': created_count, 'updated': updated_count})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -616,28 +639,19 @@ def api_settings_save(request):
     try:
         data = json.loads(request.body)
 
-        # LLM 提供商
-        if 'llm_provider' in data:
-            Setting.set('llm_provider', data['llm_provider'])
-
-        # Anthropic API Key
-        if 'anthropic_api_key' in data:
-            Setting.set('anthropic_api_key', data['anthropic_api_key'])
-
-        # 本地模型配置
-        if 'local_api_url' in data:
-            Setting.set('local_api_url', data['local_api_url'])
-        if 'local_api_key' in data:
-            Setting.set('local_api_key', data['local_api_key'])
-        if 'local_model' in data:
-            Setting.set('local_model', data['local_model'])
-            
+        # OCR LLM 配置（统一键名）
+        for key in ('llm_mode', 'llm_provider', 'llm_api_url', 'llm_api_key',
+                     'llm_model', 'llm_cloud_provider'):
+            if key in data:
+                Setting.set(key, data[key])
         if 'llm_max_tokens' in data:
             Setting.set('llm_max_tokens', str(data['llm_max_tokens']))
 
-        # 兼容旧字段
-        if 'api_key' in data:
-            Setting.set('anthropic_api_key', data['api_key'])
+        # AI 顾问配置（统一键名）
+        for key in ('advisor_mode', 'advisor_llm_provider', 'advisor_api_url',
+                     'advisor_api_key', 'advisor_model', 'advisor_cloud_provider'):
+            if key in data:
+                Setting.set(key, data[key])
 
         if 'layers' in data:
             for layer_data in data['layers']:
@@ -738,28 +752,80 @@ def api_import_data(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
+def advisor_page(request):
+    """AI 投资顾问页面"""
+    layers_data, total_value = _get_layers_summary()
+    holdings_count = Holding.objects.count()
+
+    provider = Setting.get('advisor_llm_provider', 'openai_compatible')
+    advisor_key = Setting.get('advisor_api_key', '')
+    advisor_url = Setting.get('advisor_api_url', '')
+    if provider == 'anthropic':
+        has_api_config = bool(advisor_key) or bool(advisor_url)
+    else:
+        has_api_config = bool(advisor_url)
+
+    context = {
+        'total_value': total_value,
+        'layers_data': layers_data,
+        'holdings_count': holdings_count,
+        'has_api_config': has_api_config,
+    }
+    return render(request, 'assets/advisor.html', context)
+
+
+@require_POST
+def api_advisor_evaluate(request):
+    """调用 AI 顾问评估投资组合"""
+    try:
+        layers_data, total_value = _get_layers_summary()
+
+        if total_value <= 0:
+            return JsonResponse({'success': False, 'error': '当前无持仓数据，请先添加持仓'}, status=400)
+
+        # Build holdings data for the advisor
+        holdings = Holding.objects.select_related('layer').all()
+        holdings_data = []
+        for h in holdings:
+            asset_type_display = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
+            holdings_data.append({
+                'name': h.name,
+                'code': h.code,
+                'asset_type': h.asset_type,
+                'asset_type_display': asset_type_display,
+                'layer_name': h.layer.name,
+                'platform': h.platform,
+                'market_value': float(h.market_value or 0),
+                'profit_loss': float(h.profit_loss or 0),
+                'profit_loss_pct': float(h.profit_loss_pct or 0),
+                'quantity': float(h.quantity or 0),
+                'cost_price': float(h.cost_price) if h.cost_price else None,
+                'current_price': float(h.current_price) if h.current_price else None,
+            })
+
+        result = evaluate_portfolio(layers_data, holdings_data, total_value)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
 @require_POST
 def api_test_llm(request):
-    """测试 LLM 连接（通过后端代理，避免浏览器跨域问题）"""
+    """测试 LLM 连接"""
     import httpx
 
     try:
         data = json.loads(request.body)
-        provider = data.get('provider', 'anthropic')
+        provider = data.get('provider', 'openai_compatible')
+        api_url = data.get('api_url', '')
+        api_key = data.get('api_key', '')
 
         if provider == 'openai_compatible':
-            api_url = data.get('api_url', '')
-            api_key = data.get('api_key', '')
-
             if not api_url:
                 return JsonResponse({'success': False, 'error': '请输入 API 地址'})
 
-            # 请求 /v1/models 端点
             url = api_url.rstrip('/')
-            if url.endswith('/v1'):
-                models_url = url + '/models'
-            else:
-                models_url = url + '/v1/models'
+            models_url = url + '/models' if url.endswith('/v1') else url + '/v1/models'
 
             headers = {}
             if api_key:
@@ -768,40 +834,61 @@ def api_test_llm(request):
             resp = httpx.get(models_url, headers=headers, timeout=10.0)
             resp.raise_for_status()
             result = resp.json()
-
-            models = []
-            if 'data' in result:
-                models = [m.get('id', '未知') for m in result['data']]
+            models = [m.get('id', '未知') for m in result.get('data', [])]
 
             return JsonResponse({
                 'success': True,
-                'models': models,
                 'message': f'连接成功！可用模型: {", ".join(models) if models else "未返回模型列表"}',
             })
 
         elif provider == 'anthropic':
-            api_key = data.get('api_key', '')
-            if not api_key:
-                return JsonResponse({'success': False, 'error': '请输入 API Key'})
-
-            # 简单校验 key 格式
-            if api_key.startswith('sk-ant-'):
-                return JsonResponse({
-                    'success': True,
-                    'models': ['claude-sonnet-4-20250514'],
-                    'message': 'API Key 格式正确，将在首次截图识别时验证连接',
-                })
+            if api_url:
+                # 本地 Anthropic 协议 — 测试连通性
+                headers = {}
+                if api_key:
+                    headers['Authorization'] = f'Bearer {api_key}'
+                url = api_url.rstrip('/')
+                models_url = url + '/models' if url.endswith('/v1') else url + '/v1/models'
+                try:
+                    resp = httpx.get(models_url, headers=headers, timeout=5.0)
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        models = [m.get('id', '未知') for m in result.get('data', [])]
+                        return JsonResponse({
+                            'success': True,
+                            'message': f'连接成功！可用模型: {", ".join(models) if models else "服务已响应"}',
+                        })
+                except Exception:
+                    pass
+                # 退回到基本连通测试
+                try:
+                    resp = httpx.get(url, timeout=5.0, follow_redirects=True)
+                    return JsonResponse({
+                        'success': True,
+                        'message': f'服务已响应（HTTP {resp.status_code}）',
+                    })
+                except httpx.ConnectError:
+                    return JsonResponse({'success': False, 'error': f'无法连接到 {api_url}，请检查服务是否已启动'})
             else:
-                return JsonResponse({
-                    'success': False,
-                    'error': 'API Key 格式不正确，应以 sk-ant- 开头',
-                })
+                # 云端 Anthropic — 校验 Key 格式
+                if not api_key:
+                    return JsonResponse({'success': False, 'error': '请输入 API Key'})
+                if api_key.startswith('sk-ant-'):
+                    return JsonResponse({
+                        'success': True,
+                        'message': 'API Key 格式正确，将在首次使用时验证连接',
+                    })
+                else:
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'Anthropic API Key 应以 sk-ant- 开头',
+                    })
 
         else:
-            return JsonResponse({'success': False, 'error': f'未知提供商: {provider}'})
+            return JsonResponse({'success': False, 'error': f'未知协议: {provider}'})
 
     except httpx.ConnectError:
-        return JsonResponse({'success': False, 'error': f'无法连接到 {api_url}，请检查服务是否已启动'})
+        return JsonResponse({'success': False, 'error': '无法连接，请检查服务是否已启动'})
     except httpx.HTTPStatusError as e:
         return JsonResponse({'success': False, 'error': f'HTTP {e.response.status_code}: {e.response.text[:200]}'})
     except Exception as e:

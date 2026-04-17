@@ -67,6 +67,7 @@
                 <thead>
                     <tr>
                         <th><input type="checkbox" checked onchange="toggleAllRows(this)"></th>
+                        <th>状态</th>
                         <th>名称</th>
                         <th>代码</th>
                         <th>类型</th>
@@ -137,6 +138,7 @@ let isUploading = false;
 let fileQueue = [];
 let pendingConfirmations = [];
 let processedLogHTML = "";
+let existingHoldingsSet = new Set(); // "name||platform" keys for dedup detection
 
 // Layer options for select
 const layerOptions = [
@@ -163,7 +165,10 @@ uploadZone.addEventListener('drop', (e) => {
     uploadZone.classList.remove('drag-over');
     handleFiles(e.dataTransfer.files);
 });
-fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+fileInput.addEventListener('change', (e) => {
+    handleFiles(e.target.files);
+    e.target.value = '';  // Reset so the same file can be re-selected
+});
 
 function addLog(message, type='info') {
     const logsDiv = document.getElementById('uploadLogs');
@@ -194,24 +199,33 @@ function handleFiles(files) {
 
 async function startUploadQueue() {
     isUploading = true;
-    const totalToProcess = fileQueue.length;
-    let initialCount = 0;
 
-    resultsCard.classList.add('hidden');
-    processingCard.classList.remove('hidden');
+    // Only show full-screen processing card if no confirmations are being reviewed
+    const isReviewing = !resultsCard.classList.contains('hidden');
+    if (!isReviewing) {
+        processingCard.classList.remove('hidden');
+    }
 
     while (fileQueue.length > 0) {
         const file = fileQueue.shift();
-        initialCount++;
-        const remaining = fileQueue.length;
 
-        document.getElementById('processingTitle').textContent = `🔄 正在提交给 AI 识别...`;
-        document.getElementById('processingStatus').textContent = `正在分析截图 (${initialCount}/${totalToProcess})：${file.name}，请耐心等待`;
+        if (!isReviewing) {
+            document.getElementById('processingTitle').textContent = `🔄 正在提交给 AI 识别...`;
+            document.getElementById('processingStatus').textContent = `正在分析截图：${file.name}，请耐心等待`;
+        } else {
+            addLog(`🔄 后台识别中：${file.name}`);
+        }
 
         try {
             const result = await uploadFile(file);
-            
+
             if (result.success && result.data.length > 0) {
+                // Update existing holdings set for new/existing detection
+                if (result.existing_holdings) {
+                    result.existing_holdings.forEach(h => {
+                        existingHoldingsSet.add((h.name || '') + '||' + (h.platform || ''));
+                    });
+                }
                 pendingConfirmations.push({
                     file: file,
                     upload_id: result.upload_id,
@@ -219,6 +233,11 @@ async function startUploadQueue() {
                     data: result.data
                 });
                 addLog(`⏳ 图片 ${file.name} 识别成功，等待复核`);
+                // Update the counter on the results card if reviewing
+                if (isReviewing) {
+                    document.getElementById('resultCardTitle').textContent =
+                        `✅ 识别结果 - ${currentFile.name} (剩余 ${pendingConfirmations.length} 张待确认)`;
+                }
             } else if (result.success && result.data.length === 0) {
                 addLog(`⚠️ 图片 ${file.name} 未识别到任何资产`, 'error');
             } else {
@@ -233,10 +252,11 @@ async function startUploadQueue() {
     processingCard.classList.add('hidden');
     isUploading = false;
 
-    if (pendingConfirmations.length > 0) {
+    // Only auto-show confirmations if user wasn't already reviewing
+    if (!isReviewing && pendingConfirmations.length > 0) {
         showToast('AI 识别完毕！请依次确认结果', 'success');
         showNextConfirmation();
-    } else {
+    } else if (!isReviewing) {
         showToast('处理完毕，没有需要录入的数据', 'info');
     }
 }
@@ -254,10 +274,17 @@ function showNextConfirmation() {
 
     document.getElementById('detectedPlatform').value = currentItem.platform;
     document.getElementById('resultCardTitle').textContent = `✅ 识别结果 - ${currentFile.name} (剩余 ${pendingConfirmations.length} 张待确认)`;
-    
+
     renderResults(currentItem.data);
     resultsCard.classList.remove('hidden');
 }
+
+// Re-render when platform changes, since it affects new/existing matching
+document.getElementById('detectedPlatform').addEventListener('change', function() {
+    if (pendingConfirmations.length > 0) {
+        renderResults(pendingConfirmations[0].data);
+    }
+});
 
 function skipCurrent() {
     addLog(`⏭️ 已跳过图片 ${currentFile.name}`);
@@ -285,12 +312,20 @@ function renderResults(items) {
     resultsCard.classList.remove('hidden');
     resultsBody.innerHTML = '';
 
+    // Get platform from the detected platform input for matching
+    const currentPlatform = document.getElementById('detectedPlatform').value || '';
+
     items.forEach((item, idx) => {
         const tr = document.createElement('tr');
-        
+
         // Find suggested layer
         const suggestedLayer = item.suggested_layer || 1;
-        
+
+        // Check if this product already exists (match by name+platform)
+        const itemName = item.name || '';
+        const matchKey = itemName + '||' + currentPlatform;
+        const isExisting = existingHoldingsSet.has(matchKey);
+
         // Build type select
         let typeSelect = '<select class="form-control" data-field="asset_type" style="min-width:100px;">';
         assetTypeOptions.forEach(opt => {
@@ -307,13 +342,20 @@ function renderResults(items) {
 
         const plVal = item.profit_loss || 0;
         const plClass = plVal >= 0 ? 'positive' : 'negative';
-        const platformTag = item._platform ? `<span class="text-xs text-muted">${item._platform}</span>` : '';
+
+        const statusBadge = isExisting
+            ? '<span class="badge badge-success" title="已有持仓，将更新数据">更新</span>'
+            : '<span class="badge badge-warning" title="系统中无此产品，将新建持仓">新增</span>';
+
+        if (!isExisting) {
+            tr.style.background = 'var(--color-warning-bg, #fffbeb)';
+        }
 
         tr.innerHTML = `
             <td><input type="checkbox" checked class="row-check"></td>
+            <td>${statusBadge}</td>
             <td>
-                <input type="text" class="form-control" value="${item.name || ''}" data-field="name" style="min-width:140px;">
-                ${platformTag}
+                <input type="text" class="form-control" value="${itemName}" data-field="name" style="min-width:140px;">
             </td>
             <td><input type="text" class="form-control" value="${item.code || ''}" data-field="code" style="width:80px;"></td>
             <td>${typeSelect}</td>
@@ -329,8 +371,6 @@ function renderResults(items) {
             <td>${layerSelect}</td>
         `;
         tr.dataset.index = idx;
-        tr.dataset.uploadId = item._upload_id || '';
-        tr.dataset.platform = item._platform || '';
         resultsBody.appendChild(tr);
     });
 }
@@ -389,7 +429,14 @@ function confirmCurrent() {
         confirmBtn.textContent = "确认本张并继续";
 
         if (data.success) {
-            addLog(`✅ 图片 ${currentFile.name} 成功录入 ${data.created} 项持仓`, 'success');
+            const parts = [];
+            if (data.updated) parts.push(`更新 ${data.updated} 项`);
+            if (data.created) parts.push(`新增 ${data.created} 项`);
+            addLog(`✅ 图片 ${currentFile.name} ${parts.join('，') || '无变更'}`, 'success');
+            // Add confirmed items to existing set so next image knows about them
+            items.forEach(item => {
+                existingHoldingsSet.add((item.name || '') + '||' + (item.platform || ''));
+            });
             pendingConfirmations.shift(); // Remove from queue
             showNextConfirmation();
         } else {
