@@ -10,8 +10,8 @@
 
 <!-- Alerts -->
 {% for alert in rebalance.alerts %}
-<div class="alert {% if alert.level == 'critical' %}alert-danger{% else %}alert-warning{% endif %} animate-in">
-    {% if alert.level == 'critical' %}🚨{% else %}⚠️{% endif %}
+<div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% elif alert.level == 'info' %}alert-info{% else %}alert-warning{% endif %} animate-in">
+    {% if alert.level == 'critical' %}🚨{% elif alert.level == 'success' %}🎉{% elif alert.level == 'info' %}💡{% else %}⚠️{% endif %}
     <div>
         <strong>{{ alert.message }}</strong>
         <div class="text-sm mt-1">建议操作：{{ alert.action }}</div>

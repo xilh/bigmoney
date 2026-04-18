@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/upload/confirm/', views.api_confirm_upload, name='api_confirm_upload'),
     path('api/snapshot/create/', views.api_snapshot_create, name='api_snapshot_create'),
     path('api/snapshot/<int:snapshot_id>/delete/', views.api_snapshot_delete, name='api_snapshot_delete'),
+    path('api/snapshot/compare/', views.api_snapshot_compare, name='api_snapshot_compare'),
     path('api/checklist/complete/', views.api_checklist_complete, name='api_checklist_complete'),
     path('api/settings/save/', views.api_settings_save, name='api_settings_save'),
     path('api/export/', views.api_export_data, name='api_export'),

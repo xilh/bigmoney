@@ -276,6 +276,14 @@
     <div class="card-body">
         <p class="text-sm text-muted mb-2">调整各层级的目标配置比例，总和必须等于 100%</p>
 
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;">
+            <button class="btn btn-sm btn-secondary" onclick="applyPreset('conservative')" title="保守型：重安全垫与债券，低股票敞口">🛡️ 保守型</button>
+            <button class="btn btn-sm btn-secondary" onclick="applyPreset('balanced')" title="平衡型：资产配置方案推荐比例">⚖️ 平衡型（推荐）</button>
+            <button class="btn btn-sm btn-secondary" onclick="applyPreset('growth')" title="成长型：偏重股票与另类资产">🚀 成长型</button>
+            <button class="btn btn-sm btn-secondary" onclick="applyPreset('aggressive')" title="激进型：最大化权益敞口">🔥 激进型</button>
+            <button class="btn btn-sm btn-secondary" onclick="applyPreset('retire')" title="临退休：逐步降低风险">🏖️ 临退休</button>
+        </div>
+
         {% for layer in layers %}
         <div class="flex-center gap-2 mb-2" style="padding: 12px 0; border-bottom: 1px solid var(--color-border);">
             <div class="layer-dot" style="background: {{ layer.color }}; width: 12px; height: 12px;"></div>
@@ -558,6 +566,39 @@ function saveAdvConfig() {
         document.getElementById('advCloudNote').textContent = CLOUD_PROVIDERS[advCP].note;
     }
 })();
+
+// ==================== Ratio Presets ====================
+// Derived from 资产配置方案.md:
+//   Plan ranges: L1 10-15%, L2 20-25%, L3 35-40%, L4 10-15%, L5 5-10%
+//   40yo balanced: 55-60% risk (L3+L4+L5), 40-45% defensive (L1+L2)
+//   Lifecycle (line 166): approaching 50 → shift 5-10% from L3/L5 to L1/L2
+const RATIO_PRESETS = {
+    conservative: { name: '保守型', desc: '极低风险偏好或近期有大额支出，风险资产45%',           ratios: {1: 20, 2: 35, 3: 25, 4: 10, 5: 10} },
+    balanced:     { name: '平衡型', desc: '方案推荐 · 40岁平衡型 · 风险资产60%',              ratios: {1: 15, 2: 25, 3: 37.5, 4: 12.5, 5: 10} },
+    growth:       { name: '成长型', desc: '30-40岁 · 收入稳定 · 可承受较大波动 · 风险资产70%',  ratios: {1: 10, 2: 20, 3: 40, 4: 15, 5: 15} },
+    aggressive:   { name: '激进型', desc: '30岁以下 · 长期视野 · 最大化增长 · 风险资产85%',     ratios: {1: 5, 2: 10, 3: 50, 4: 15, 5: 20} },
+    retire:       { name: '临退休', desc: '50岁+ · 从平衡型减配L3/L5至L1/L2 · 风险资产50%',   ratios: {1: 20, 2: 30, 3: 30, 4: 12.5, 5: 7.5} },
+};
+
+// Map layer.id → layer.order so presets can set ratios by order
+const LAYER_ORDER_MAP = {
+    {% for layer in layers %}{{ layer.id }}: {{ layer.order }},{% endfor %}
+};
+
+function applyPreset(key) {
+    const preset = RATIO_PRESETS[key];
+    if (!preset) return;
+
+    for (const [layerId, order] of Object.entries(LAYER_ORDER_MAP)) {
+        const ratio = preset.ratios[order] || 0;
+        const slider = document.getElementById('ratio-slider-' + layerId);
+        const input = document.getElementById('ratio-input-' + layerId);
+        if (slider) slider.value = ratio;
+        if (input) input.value = ratio;
+    }
+    recalcTotal();
+    showToast(`已应用「${preset.name}」：${preset.desc}`, 'success');
+}
 
 // ==================== Ratios ====================
 function updateRatioDisplay(slider) {

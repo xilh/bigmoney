@@ -47,9 +47,9 @@
 {% if risk_alerts or deviation_alerts %}
 <div class="animate-in stagger-1" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
     {% for alert in risk_alerts %}
-    <div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% else %}alert-warning{% endif %} p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
+    <div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% elif alert.level == 'info' %}alert-info{% else %}alert-warning{% endif %} p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
         <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 1.2rem;">{% if alert.level == 'critical' %}🚨{% elif alert.level == 'success' %}🎉{% else %}⚠️{% endif %}</span>
+            <span style="font-size: 1.2rem;">{% if alert.level == 'critical' %}🚨{% elif alert.level == 'success' %}🎉{% elif alert.level == 'info' %}💡{% else %}⚠️{% endif %}</span>
             <div>
                 <strong>{{ alert.source }}:</strong> {{ alert.message }}
             </div>

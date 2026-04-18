@@ -673,6 +673,22 @@ def api_snapshot_create(request):
         layer_values = {ld['name']: ld['actual_value'] for ld in layers_data}
         layer_ratios = {ld['name']: ld['actual_ratio'] for ld in layers_data}
 
+        # 保存每笔持仓明细，用于快照对比
+        holdings = Holding.objects.select_related('layer').all()
+        holdings_data = [
+            {
+                'id': h.id,
+                'name': h.name,
+                'code': h.code,
+                'layer': h.layer.name,
+                'platform': h.platform,
+                'market_value': float(h.market_value or 0),
+                'profit_loss': float(h.profit_loss or 0),
+                'profit_loss_pct': float(h.profit_loss_pct or 0),
+            }
+            for h in holdings
+        ]
+
         data = json.loads(request.body) if request.body else {}
 
         snapshot = Snapshot.objects.create(
@@ -680,6 +696,7 @@ def api_snapshot_create(request):
             total_value=total_value,
             layer_values=layer_values,
             layer_ratios=layer_ratios,
+            holdings_data=holdings_data,
             notes=data.get('notes', ''),
         )
         return JsonResponse({
@@ -698,6 +715,66 @@ def api_snapshot_delete(request, snapshot_id):
         snapshot = get_object_or_404(Snapshot, id=snapshot_id)
         snapshot.delete()
         return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+def api_snapshot_compare(request):
+    """对比两个快照，找出持仓变动"""
+    try:
+        old_id = request.GET.get('old')
+        new_id = request.GET.get('new')
+        if not old_id or not new_id:
+            return JsonResponse({'success': False, 'error': '需要提供 old 和 new 快照ID'}, status=400)
+
+        old_snap = get_object_or_404(Snapshot, id=old_id)
+        new_snap = get_object_or_404(Snapshot, id=new_id)
+
+        old_holdings = {h['name']: h for h in (old_snap.holdings_data or [])}
+        new_holdings = {h['name']: h for h in (new_snap.holdings_data or [])}
+
+        all_names = sorted(set(list(old_holdings.keys()) + list(new_holdings.keys())))
+
+        changes = []
+        for name in all_names:
+            old_h = old_holdings.get(name)
+            new_h = new_holdings.get(name)
+
+            old_val = old_h['market_value'] if old_h else 0
+            new_val = new_h['market_value'] if new_h else 0
+            diff = new_val - old_val
+
+            if old_h and not new_h:
+                status = 'removed'
+            elif new_h and not old_h:
+                status = 'added'
+            elif abs(diff) < 0.01:
+                status = 'unchanged'
+            else:
+                status = 'changed'
+
+            changes.append({
+                'name': name,
+                'layer': (new_h or old_h).get('layer', ''),
+                'platform': (new_h or old_h).get('platform', ''),
+                'old_value': round(old_val, 2),
+                'new_value': round(new_val, 2),
+                'diff': round(diff, 2),
+                'status': status,
+            })
+
+        # 按变动金额排序，亏损最多的排前面
+        changes.sort(key=lambda x: x['diff'])
+
+        return JsonResponse({
+            'success': True,
+            'old_date': timezone.localtime(old_snap.date).strftime('%Y-%m-%d %H:%M'),
+            'new_date': timezone.localtime(new_snap.date).strftime('%Y-%m-%d %H:%M'),
+            'old_total': float(old_snap.total_value),
+            'new_total': float(new_snap.total_value),
+            'total_diff': float(new_snap.total_value - old_snap.total_value),
+            'changes': changes,
+        })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 

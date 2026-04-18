@@ -115,21 +115,37 @@ def calculate_risk_alerts(holdings, total_value) -> list:
         return alerts
 
     for h in holdings:
-        # 1. 集中度预警（单只个股突破5%天花板，排除货币基金/现金/宽基等极低风险品类）
-        # 文理中特指：任何单只股票仓位不超过总资产的5% 
-        if h.asset_type not in ['cash', 'money_fund', 'deposit', 'bank_product']:
+        # 1. 个股集中度预警：任何单只股票仓位不超过总资产的5%
+        # 仅适��于个股类资产，基金/ETF/黄金等不受此限制
+        if h.asset_type in ('stock', 'dividend_stock', 'hk_stock'):
             if h.market_value and total_value > 0:
                 pct = float(h.market_value) / total_value * 100
                 if pct > 5.0:
-                    action_msg = "突破5%天花板，建议在本月内分批减仓至总比例的5%以下。"
-                    # 如果占比极端夸张，标记为 critical
                     level = "critical" if pct > 10.0 else "warning"
                     alerts.append({
                         "level": level,
                         "source": h.name,
                         "message": f"单票集中度过高（当前占比 {pct:.1f}%）",
-                        "action": action_msg,
+                        "action": "突破5%天花板，建议在本月内分批减仓至总比例的5%以下。",
                     })
+
+        # 2. 债券基金异常波动预警：总盈亏比例跌幅>1%视为异常
+        if h.asset_type in ('bond_fund', 'convertible_bond') and h.profit_loss_pct:
+            pl_pct = float(h.profit_loss_pct)
+            if pl_pct < -3.0:
+                alerts.append({
+                    "level": "critical",
+                    "source": h.name,
+                    "message": f"债基异常波动（盈亏 {pl_pct:+.1f}%）",
+                    "action": "可能信用事件或极端利率环境，审视持仓是否有信用违约风险，如有则转换为利率债基金或货币基金。",
+                })
+            elif pl_pct < -1.0:
+                alerts.append({
+                    "level": "warning",
+                    "source": h.name,
+                    "message": f"债基波动偏大（盈亏 {pl_pct:+.1f}%）",
+                    "action": "检查原因：若为利率政策��击，可继续持有；考虑缩短久期，换入更短期限的债基。",
+                })
 
         # 2. 第五层（卫星仓位）特有止损与止盈纪律
         # 假设 layer.order=5 为第五层 (卫星仓位)
@@ -153,8 +169,7 @@ def calculate_risk_alerts(holdings, total_value) -> list:
                 })
             elif pl_pct >= 50:
                 alerts.append({
-                    "level": "warning", 
-                    # Use warning just to draw attention for setup rules, though it's a good thing
+                    "level": "info",
                     "source": h.name,
                     "message": f"可观利润（盈亏 {pl_pct:+.1f}%）",
                     "action": "建议设定最高点回撤 20% 的移动止盈线防坐过山车。",

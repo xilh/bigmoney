@@ -96,6 +96,7 @@ class Snapshot(models.Model):
     total_value = models.DecimalField('总资产(元)', max_digits=18, decimal_places=2, default=0)
     layer_values = models.JSONField('各层级市值', default=dict)
     layer_ratios = models.JSONField('各层级比例', default=dict)
+    holdings_data = models.JSONField('持仓明细', default=list, blank=True)
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
