@@ -17,7 +17,7 @@ from .models import (
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
-    calculate_rebalance, allocate_new_funds, DRAWDOWN_PROTOCOLS
+    calculate_rebalance, DRAWDOWN_PROTOCOLS
 )
 from .services.advisor import evaluate_portfolio
 
@@ -78,8 +78,14 @@ def dashboard(request):
     )
     total_profit_pct = float(total_profit / total_cost * 100) if total_cost > 0 else 0
 
+    from .services.rebalance import calculate_risk_alerts
+
     # 偏差警告
-    alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
+    deviation_alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
+    
+    # 风险预警
+    holdings = Holding.objects.all()
+    risk_alerts = calculate_risk_alerts(holdings, total_value)
 
     # 平台分布
     platform_distribution = list(Holding.objects.values('platform')
@@ -102,7 +108,8 @@ def dashboard(request):
         'layers_json': json.dumps(layers_data, cls=DecimalEncoder, ensure_ascii=False),
         'platforms_json': json.dumps(platforms_data, ensure_ascii=False),
         'recent_transactions': recent_transactions,
-        'alerts': alerts,
+        'deviation_alerts': deviation_alerts,
+        'risk_alerts': risk_alerts,
         'holdings_count': Holding.objects.count(),
     }
     return render(request, 'assets/dashboard.html', context)
@@ -156,6 +163,13 @@ def rebalance_page(request):
     layers_data, total_value = _get_layers_summary()
     rebalance_result = calculate_rebalance(layers_data, total_value)
 
+    from .services.rebalance import calculate_risk_alerts
+    holdings = Holding.objects.all()
+    # 往再平衡的分析里追加持股风控预警
+    risk_alerts = calculate_risk_alerts(holdings, total_value)
+    # prepend risk alerts so they are highly visible
+    rebalance_result['alerts'] = risk_alerts + rebalance_result.get('alerts', [])
+
     context = {
         'total_value': total_value,
         'rebalance': rebalance_result,
@@ -204,51 +218,90 @@ def checklist_page(request):
             'name': '周检视',
             'period': '每周日晚间 · 约10分钟',
             'items': [
-                '查看各账户总体净值变化',
-                '确认本周定投扣款是否成功执行（DCA阶段）',
-                '浏览宏观新闻标题，判断是否有重大事件',
-                '提醒：周检视不做任何买卖操作',
+                {'text': '查看各账户总体净值变化', 'auto_id': None},
+                {'text': '确认本周定投扣款是否成功执行（DCA阶段）', 'auto_id': None},
+                {'text': '浏览宏观新闻标题，判断是否有重大事件', 'auto_id': None},
+                {'text': '提醒：周检视不做任何买卖操作', 'auto_id': None},
             ],
         },
         'monthly': {
             'name': '月检视',
             'period': '每月第一个周末 · 约30分钟',
             'items': [
-                '记录各层级实际比例 vs 目标比例',
-                '检查货币基金收益率是否异常偏低',
-                '确认债券基金是否有异常波动（单月跌幅>1%即为异常）',
-                '审视单只个股仓位是否突破5%红线',
-                '如有超5%个股，本月内分批减仓至目标比例',
+                {'text': '记录各层级实际比例 vs. 目标比例', 'auto_id': 'deviation_check'},
+                {'text': '检查货币基金收益率是否异常偏低', 'auto_id': 'money_fund_check'},
+                {'text': '确认债券基金是否有异常波动（单月跌幅>1%即为异常）', 'auto_id': 'bond_fund_check'},
+                {'text': '审视单只个股仓位是否因涨跌突破5%红线', 'auto_id': 'concentration_check'},
+                {'text': '如存在单笔个股超过5%，在本月内分批减仓至目标比例', 'auto_id': None},
             ],
         },
         'quarterly': {
             'name': '季度检视',
             'period': '季末最后一周 · 约1-2小时',
             'items': [
-                '全面审视五层配置比例，判断是否需要再平衡',
-                '检查各基金产品同类排名（连续两季后25%应考虑替换）',
-                '审视行业暴露：检查股票持仓是否在某一行业过度集中',
-                '审视第五层卫星仓位每笔投资逻辑是否仍然成立',
-                '记录本季度总回报和各层级回报',
+                {'text': '全面审视五层配置比例，判断是否需要小幅再平衡', 'auto_id': 'deviation_check'},
+                {'text': '检查各基金产品同类排名（连续两季后25%应考虑替换）', 'auto_id': None},
+                {'text': '审视行业暴露：检查股票持仓是否在某一行业过度集中', 'auto_id': None},
+                {'text': '审视第五层卫星仓位的每笔投资投资逻辑是否仍然成立', 'auto_id': 'satellite_check'},
+                {'text': '记录本季度总回报和各层级回报，建立历史记录', 'auto_id': None},
             ],
         },
         'yearly': {
             'name': '年度大检',
             'period': '12月或次年1月初 · 约2-3小时',
             'items': [
-                '各层级实际比例 vs. 目标比例，执行强制再平衡',
-                '单只个股是否有超过5%的情况',
-                '基金产品同类排名审视，替换连续落后的基金',
-                '保险保障是否充足，受益人是否正确',
-                '税务优化：股息持有期、个税扣除项是否充分利用',
-                '第五层卫星仓位每笔投资逻辑重新评估',
-                '风险偏好是否需要调整（家庭、事业、健康变化）',
-                '下一年度目标配置比例是否需要微调（年龄因素）',
-                '遗嘱、家族信托、子女教育基金进展审视',
-                '记录本年度总回报、各层级回报、重大决策日志',
+                {'text': '各层级实际比例 vs. 目标比例，执行强制再平衡', 'auto_id': 'deviation_check'},
+                {'text': '单只个股是否有超过5%的情况', 'auto_id': 'concentration_check'},
+                {'text': '基金产品同类排名审视，替换连续落后的基金', 'auto_id': None},
+                {'text': '保险保障是否充足，受益人是否正确', 'auto_id': None},
+                {'text': '税务优化：股息持有期、个税扣除项是否充分利用', 'auto_id': None},
+                {'text': '第五层卫星仓位每笔投资逻辑重新评估', 'auto_id': 'satellite_check'},
+                {'text': '风险偏好是否需要调整（家庭、事业、健康变化）', 'auto_id': None},
+                {'text': '下一年度目标配置比例是否需要微调（年龄因素）', 'auto_id': None},
+                {'text': '遗嘱、家族信托、子女教育基金进展审视', 'auto_id': None},
+                {'text': '记录本年度总回报、各层级回报、重大决策日志', 'auto_id': None},
             ],
         },
     }
+
+    # 执行自动化检查
+    layers_data, total_value = _get_layers_summary()
+    holdings = Holding.objects.all()
+    from .services.rebalance import calculate_risk_alerts
+    risk_alerts = calculate_risk_alerts(holdings, total_value)
+    
+    # 集中度检查
+    concentration_alerts = [a for a in risk_alerts if '单票集中度过高' in a['message']]
+    # 卫星仓位检查
+    satellite_alerts = [a for a in risk_alerts if '单票集中度过高' not in a['message']]
+    # 偏差检查
+    deviation_alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
+    # 债基检查
+    bond_alerts = [h for h in holdings if h.asset_type == 'bond_fund' and (h.profit_loss_pct or 0) < -1.0]
+
+    automated_results = {
+        'deviation_check': {
+            'pass': len(deviation_alerts) == 0,
+            'message': '所有层级均在5%偏差范围内' if len(deviation_alerts) == 0 else f'发现 {len(deviation_alerts)} 个层级偏差超标'
+        },
+        'concentration_check': {
+            'pass': len(concentration_alerts) == 0,
+            'message': '无单票违反5%集中度红线' if len(concentration_alerts) == 0 else f'发现 {len(concentration_alerts)} 只票突破5%红线'
+        },
+        'satellite_check': {
+            'pass': len(satellite_alerts) == 0,
+            'message': '卫星仓位暂无止盈止损触发' if len(satellite_alerts) == 0 else f'发现 {len(satellite_alerts)} 个卫星仓位触发预警'
+        },
+        'bond_fund_check': {
+            'pass': len(bond_alerts) == 0,
+            'message': '未发现明显亏损债基' if len(bond_alerts) == 0 else f'发现 {len(bond_alerts)} 只债基亏损超过1% (仅参考总收益)'
+        },
+        'money_fund_check': {
+            'pass': True,
+            'message': '需登录相关平台确认最新七日年化'
+        }
+    }
+
 
     # 获取各类型最近一次完成记录
     last_records = {}
@@ -261,6 +314,7 @@ def checklist_page(request):
     context = {
         'checklists': checklists,
         'last_records': last_records,
+        'automated_results': automated_results,
     }
     return render(request, 'assets/checklist.html', context)
 
@@ -644,19 +698,6 @@ def api_snapshot_delete(request, snapshot_id):
         snapshot = get_object_or_404(Snapshot, id=snapshot_id)
         snapshot.delete()
         return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
-
-
-@require_POST
-def api_allocate_funds(request):
-    """新增资金分配计算"""
-    try:
-        data = json.loads(request.body)
-        new_amount = Decimal(str(data.get('amount', 0)))
-        layers_data, total_value = _get_layers_summary()
-        allocations = allocate_new_funds(layers_data, total_value, new_amount)
-        return JsonResponse({'success': True, 'allocations': allocations})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 

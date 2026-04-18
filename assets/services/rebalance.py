@@ -99,72 +99,91 @@ def calculate_rebalance(layers_data: list, total_value: float) -> dict:
     }
 
 
-def allocate_new_funds(layers_data: list, total_value: float, new_amount: float) -> list:
+def calculate_risk_alerts(holdings, total_value) -> list:
     """
-    新增资金分配：优先投入最低配的层级
+    计算基于全部持仓的逐笔风险预警（单票超5%、卫星层止盈止损）
     
     Args:
-        layers_data: 各层级数据
-        total_value: 当前总资产
-        new_amount: 新增资金
+        holdings: QuerySet of Holding
+        total_value: 当前总资产市值
         
     Returns:
-        list of allocation suggestions
+        list of alert dicts: [{"level": str, "source": str, "message": str, "action": str}]
     """
-    if new_amount <= 0 or total_value <= 0:
-        return []
+    alerts = []
+    if total_value <= 0:
+        return alerts
 
-    new_total = total_value + new_amount
-    allocations = []
-    remaining = new_amount
-
-    # 计算每个层级的缺口
-    gaps = []
-    for layer in layers_data:
-        target_value = new_total * layer['target_ratio'] / 100
-        current_value = layer['actual_value']
-        gap = target_value - current_value
-        if gap > 0:
-            gaps.append({
-                "id": layer['id'],
-                "name": layer['name'],
-                "gap": gap,
-                "target_ratio": layer['target_ratio'],
-            })
-
-    # 按缺口大小排序，优先填充缺口最大的
-    gaps.sort(key=lambda x: x['gap'], reverse=True)
-
-    for gap_info in gaps:
-        if remaining <= 0:
-            break
-        alloc = min(gap_info['gap'], remaining)
-        allocations.append({
-            "layer": gap_info['name'],
-            "layer_id": gap_info['id'],
-            "amount": round(alloc, 2),
-            "reason": f"当前低配，缺口 ¥{gap_info['gap']:,.0f}",
-        })
-        remaining -= alloc
-
-    # 如果还有剩余，按目标比例分配
-    if remaining > 0:
-        for layer in layers_data:
-            alloc = remaining * layer['target_ratio'] / 100
-            if alloc > 0:
-                # 合并到已有分配
-                existing = next((a for a in allocations if a.get('layer_id') == layer['id']), None)
-                if existing:
-                    existing['amount'] += round(alloc, 2)
-                else:
-                    allocations.append({
-                        "layer": layer['name'],
-                        "layer_id": layer['id'],
-                        "amount": round(alloc, 2),
-                        "reason": "按目标比例分配剩余资金",
+    for h in holdings:
+        # 1. 集中度预警（单只个股突破5%天花板，排除货币基金/现金/宽基等极低风险品类）
+        # 文理中特指：任何单只股票仓位不超过总资产的5% 
+        if h.asset_type not in ['cash', 'money_fund', 'deposit', 'bank_product']:
+            if h.market_value and total_value > 0:
+                pct = float(h.market_value) / total_value * 100
+                if pct > 5.0:
+                    action_msg = "突破5%天花板，建议在本月内分批减仓至总比例的5%以下。"
+                    # 如果占比极端夸张，标记为 critical
+                    level = "critical" if pct > 10.0 else "warning"
+                    alerts.append({
+                        "level": level,
+                        "source": h.name,
+                        "message": f"单票集中度过高（当前占比 {pct:.1f}%）",
+                        "action": action_msg,
                     })
 
-    return allocations
+        # 2. 第五层（卫星仓位）特有止损与止盈纪律
+        # 假设 layer.order=5 为第五层 (卫星仓位)
+        if hasattr(h, 'layer') and h.layer.order == 5 and h.profit_loss_pct:
+            pl_pct = float(h.profit_loss_pct)
+            
+            # 止盈
+            if pl_pct >= 200:
+                alerts.append({
+                    "level": "success",
+                    "source": h.name,
+                    "message": f"强力复利达成（盈亏 {pl_pct:+.1f}%）",
+                    "action": "卖出三分之二部分，将利润回收到第一层或核心宽基层级，剩余部分继续持有。",
+                })
+            elif pl_pct >= 100:
+                alerts.append({
+                    "level": "success",
+                    "source": h.name,
+                    "message": f"盈利翻倍（盈亏 {pl_pct:+.1f}%）",
+                    "action": "建议卖出一半收回成本，将剩余转化为「零成本仓位」，设定最高点回撤 15% 的移动止盈线。",
+                })
+            elif pl_pct >= 50:
+                alerts.append({
+                    "level": "warning", 
+                    # Use warning just to draw attention for setup rules, though it's a good thing
+                    "source": h.name,
+                    "message": f"可观利润（盈亏 {pl_pct:+.1f}%）",
+                    "action": "建议设定最高点回撤 20% 的移动止盈线防坐过山车。",
+                })
+            
+            # 止损
+            if pl_pct <= -70:
+                alerts.append({
+                    "level": "critical",
+                    "source": h.name,
+                    "message": f"穿透底线（亏损 {pl_pct:+.1f}%）",
+                    "action": "无条件止损！接受「学费」，切勿补仓摆平成本，不要幻想反弹。",
+                })
+            elif pl_pct <= -50:
+                alerts.append({
+                    "level": "critical",
+                    "source": h.name,
+                    "message": f"高危亏损（亏损 {pl_pct:+.1f}%）",
+                    "action": "默认止损点已触发。除非有极其强烈的理由继续持有，否则应立刻清仓。",
+                })
+            elif pl_pct <= -30:
+                alerts.append({
+                    "level": "warning",
+                    "source": h.name,
+                    "message": f"逻辑验证预警（亏损 {pl_pct:+.1f}%）",
+                    "action": "强制重新审视投资逻辑。若写不出有说服力的持仓理由，请立即止损。",
+                })
+                
+    return alerts
 
 
 # 下跌应对协议数据（基于文档第三节）

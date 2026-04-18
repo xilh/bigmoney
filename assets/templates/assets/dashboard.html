@@ -30,16 +30,51 @@
         </div>
     </div>
     <div class="stat-card card-compact">
-        <div class="stat-label">偏差预警</div>
-        <div class="stat-value {% if alerts %}text-warning{% else %}text-success{% endif %}">
-            {{ alerts|length }}
+        <div class="stat-label">预警提示</div>
+        <div class="stat-value {% if deviation_alerts or risk_alerts %}text-warning{% else %}text-success{% endif %}">
+            {{ deviation_alerts|length|add:risk_alerts|length }}
         </div>
-        <div class="stat-sub">{% if alerts %}个层级超过5%偏差{% else %}配置均在正常范围{% endif %}</div>
+        <div class="stat-sub">
+            {% if deviation_alerts or risk_alerts %}
+                点击查看下方详情
+            {% else %}
+                资产健康运行中
+            {% endif %}
+        </div>
     </div>
 </div>
 
+{% if risk_alerts or deviation_alerts %}
+<div class="animate-in stagger-1" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+    {% for alert in risk_alerts %}
+    <div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% else %}alert-warning{% endif %} p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.2rem;">{% if alert.level == 'critical' %}🚨{% elif alert.level == 'success' %}🎉{% else %}⚠️{% endif %}</span>
+            <div>
+                <strong>{{ alert.source }}:</strong> {{ alert.message }}
+            </div>
+        </div>
+        <div class="text-sm">建议：{{ alert.action }}</div>
+    </div>
+    {% endfor %}
+    {% for ld in deviation_alerts %}
+    <div class="alert alert-danger p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.2rem;">⚠️</span>
+            <div>
+                <strong>{{ ld.name }}配置严重偏差:</strong> 实际 {{ ld.actual_ratio }}% vs 目标 {{ ld.target_ratio }}%
+            </div>
+        </div>
+        <div class="text-sm">
+            <a href="{% url 'assets:rebalance' %}" style="color: inherit; text-decoration: underline;">去调优 →</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <!-- Charts + Deviation + Transactions -->
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;" class="animate-in stagger-1">
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;" class="animate-in stagger-2">
     <!-- Allocation Donut -->
     <div class="card">
         <div class="card-header" style="padding: 12px 16px;">
@@ -66,7 +101,7 @@
     </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;" class="animate-in stagger-2">
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;" class="animate-in stagger-3">
     <!-- Deviation Analysis -->
     <div class="card">
         <div class="card-header" style="padding: 12px 16px;">

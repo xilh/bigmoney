@@ -194,40 +194,5 @@ function toggleAccordion(header) {
     header.parentElement.classList.toggle('open');
 }
 
-function simulateAllocation() {
-    const amount = parseFloat(document.getElementById('newFundAmount').value);
-    if (!amount || amount <= 0) {
-        showToast('请输入有效金额', 'error');
-        return;
-    }
-
-    fetch('{% url "assets:api_allocate" %}', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': '{{ csrf_token }}',
-        },
-        body: JSON.stringify({ amount: amount }),
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            const container = document.getElementById('allocationResults');
-            const body = document.getElementById('allocationBody');
-            container.classList.remove('hidden');
-            body.innerHTML = '';
-            
-            data.allocations.forEach(a => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td><strong>${a.layer}</strong></td>
-                    <td class="text-right font-mono text-success">+¥${Number(a.amount).toLocaleString()}</td>
-                    <td class="text-muted">${a.reason}</td>
-                `;
-                body.appendChild(tr);
-            });
-        }
-    });
-}
 </script>
 {% endblock %}

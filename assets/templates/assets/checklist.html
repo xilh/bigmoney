@@ -40,7 +40,23 @@
             <div class="checklist-item" id="checklist-{{ key }}-{{ forloop.counter0 }}">
                 <input type="checkbox" class="checklist-checkbox" data-period="{{ key }}" data-index="{{ forloop.counter0 }}"
                     onchange="toggleCheckItem(this)">
-                <span class="checklist-text">{{ item }}</span>
+                <div class="checklist-text" style="display: flex; flex-direction: column; gap: 4px;">
+                    <div>{{ item.text }}</div>
+                    {% if item.auto_id and automated_results|dictsort:"0" %}
+                        {% for auto_key, auto_res in automated_results.items %}
+                            {% if auto_key == item.auto_id %}
+                                <div class="text-xs" style="margin-left: 0; display: inline-flex; align-items: center; gap: 4px;">
+                                    {% if auto_res.pass %}
+                                        <span class="badge badge-success" style="font-size: 0.7rem; padding: 2px 6px;">🤖 系统检测通过</span>
+                                    {% else %}
+                                        <span class="badge badge-danger" style="font-size: 0.7rem; padding: 2px 6px;">⚠️ 系统检测异常</span>
+                                    {% endif %}
+                                    <span class="text-muted">{{ auto_res.message }}</span>
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+                </div>
             </div>
             {% endfor %}
 
