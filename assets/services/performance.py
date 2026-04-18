@@ -64,7 +64,7 @@ def calculate_interval_performance(start_date_str, end_date_str):
         days_passed = (tx_day - start_day).days
         days_passed = max(0, min(days_passed, total_days))
 
-        weight = Decimal(str((total_days - days_passed) / total_days))
+        weight = Decimal(total_days - days_passed) / Decimal(total_days)
 
         amount = tx.amount if tx.action == 'transfer' else -tx.amount
         cf_net += amount

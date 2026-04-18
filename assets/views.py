@@ -70,10 +70,13 @@ def dashboard(request):
     layers_data, total_value = _get_layers_summary()
     recent_transactions = Transaction.objects.all()[:5]
 
+    # 一次查询所有持仓，后续复用
+    holdings = list(Holding.objects.select_related('layer').all())
+
     # 计算总盈亏
-    total_profit = sum((h.profit_loss or Decimal('0')) for h in Holding.objects.all())
+    total_profit = sum((h.profit_loss or Decimal('0')) for h in holdings)
     total_cost = sum(
-        (h.cost_price or Decimal('0')) * h.quantity for h in Holding.objects.all()
+        (h.cost_price or Decimal('0')) * h.quantity for h in holdings
         if h.cost_price and h.quantity
     )
     total_profit_pct = float(total_profit / total_cost * 100) if total_cost > 0 else 0
@@ -82,9 +85,8 @@ def dashboard(request):
 
     # 偏差警告
     deviation_alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
-    
+
     # 风险预警
-    holdings = Holding.objects.all()
     risk_alerts = calculate_risk_alerts(holdings, total_value)
 
     # 平台分布
@@ -164,7 +166,7 @@ def rebalance_page(request):
     rebalance_result = calculate_rebalance(layers_data, total_value)
 
     from .services.rebalance import calculate_risk_alerts
-    holdings = Holding.objects.all()
+    holdings = Holding.objects.select_related('layer').all()
     # 往再平衡的分析里追加持股风控预警
     risk_alerts = calculate_risk_alerts(holdings, total_value)
     # prepend risk alerts so they are highly visible
@@ -266,7 +268,7 @@ def checklist_page(request):
 
     # 执行自动化检查
     layers_data, total_value = _get_layers_summary()
-    holdings = Holding.objects.all()
+    holdings = Holding.objects.select_related('layer').all()
     from .services.rebalance import calculate_risk_alerts
     risk_alerts = calculate_risk_alerts(holdings, total_value)
     
@@ -458,11 +460,15 @@ def api_transaction_create(request):
         if not action or not asset_name or amount <= 0:
             return JsonResponse({'success': False, 'error': '请提供完整的资金记录信息'}, status=400)
 
+        parsed_date = date.fromisoformat(tx_date)
+        if parsed_date > date.today():
+            return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
+
         Transaction.objects.create(
             action=action,
             asset_name=asset_name,
             amount=amount,
-            date=tx_date,
+            date=parsed_date,
         )
         return JsonResponse({'success': True})
     except Exception as e:
@@ -483,7 +489,10 @@ def api_transaction_update(request, tx_id):
         if 'amount' in data:
             tx.amount = Decimal(str(data['amount']))
         if 'date' in data:
-            tx.date = data['date']
+            parsed_date = date.fromisoformat(data['date'])
+            if parsed_date > date.today():
+                return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
+            tx.date = parsed_date
         if 'notes' in data:
             tx.notes = data['notes']
 
@@ -585,6 +594,11 @@ def api_confirm_upload(request):
 
         if upload_id:
             upload = get_object_or_404(Upload, id=upload_id)
+            if upload.status == 'confirmed':
+                return JsonResponse({
+                    'success': False,
+                    'error': '该截图已确认过，不可重复确认。如需更新数据请重新上传。',
+                }, status=400)
             upload.status = 'confirmed'
             if platform:
                 upload.platform = platform
@@ -608,6 +622,7 @@ def api_confirm_upload(request):
 
             # 查找同名且同平台的持仓，如果存在则更新
             holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
+            holding_existed = holding is not None
             
             # 准备数据
             code = item.get('code', '')
@@ -658,7 +673,8 @@ def api_confirm_upload(request):
                     profit_loss_pct=profit_loss_pct,
                 )
 
-            created_count += 1
+            if not holding_existed:
+                created_count += 1
 
         return JsonResponse({'success': True, 'created': created_count, 'updated': updated_count})
     except Exception as e:
@@ -689,6 +705,11 @@ def api_snapshot_create(request):
             for h in holdings
         ]
 
+        # 完整性校验：持仓明细合计 vs 层级合计
+        holdings_sum = sum(h['market_value'] for h in holdings_data)
+        layers_sum = sum(layer_values.values())
+        integrity_ok = abs(holdings_sum - layers_sum) < 1.0  # 允许1元舍入误差
+
         data = json.loads(request.body) if request.body else {}
 
         snapshot = Snapshot.objects.create(
@@ -699,11 +720,20 @@ def api_snapshot_create(request):
             holdings_data=holdings_data,
             notes=data.get('notes', ''),
         )
-        return JsonResponse({
+
+        warning = None
+        if not integrity_ok:
+            diff = holdings_sum - layers_sum
+            warning = f'数据完整性警告：持仓明细合计与层级合计差 ¥{diff:,.0f}，可能存在重复或遗漏持仓'
+
+        result = {
             'success': True,
             'id': snapshot.id,
             'total_value': total_value,
-        })
+        }
+        if warning:
+            result['warning'] = warning
+        return JsonResponse(result)
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 

@@ -47,7 +47,7 @@ ASSET_TYPE_CHOICES = [
 class Holding(models.Model):
     """持仓记录"""
     layer = models.ForeignKey(
-        AssetLayer, on_delete=models.CASCADE,
+        AssetLayer, on_delete=models.PROTECT,
         related_name='holdings', verbose_name='所属层级'
     )
     name = models.CharField('名称', max_length=200)
@@ -136,6 +136,11 @@ class Transaction(models.Model):
         ordering = ['-date', '-created_at']
         verbose_name = '交易记录'
         verbose_name_plural = '交易记录'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.date and self.date > timezone.now().date():
+            raise ValidationError({'date': '操作日期不能是未来日期'})
 
     def __str__(self):
         return f'{self.get_action_display()} {self.asset_name} ¥{self.amount:,.0f}'

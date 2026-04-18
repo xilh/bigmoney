@@ -364,8 +364,13 @@ function createSnapshot() {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            showToast('快照已创建', 'success');
-            setTimeout(() => location.reload(), 500);
+            if (data.warning) {
+                showToast(data.warning, 'error');
+                setTimeout(() => location.reload(), 3000);
+            } else {
+                showToast('快照已创建', 'success');
+                setTimeout(() => location.reload(), 500);
+            }
         } else {
             showToast('创建失败: ' + data.error, 'error');
         }
