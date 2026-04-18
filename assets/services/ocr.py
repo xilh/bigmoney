@@ -6,8 +6,11 @@
 """
 import base64
 import json
+import logging
 from pathlib import Path
 import time
+
+logger = logging.getLogger(__name__)
 
 import anthropic
 import httpx
@@ -317,6 +320,7 @@ def _call_anthropic(image_data: str, media_type: str, api_key: str, model: str,
             last_err = e
             time.sleep(1 * (attempt + 1))
 
+    logger.error("Anthropic API failed after 3 retries: %s", last_err)
     raise Exception(f'网络请求持续失败，可能由于代理或防火墙引起 (已重试3次): {str(last_err)}')
 
 
@@ -388,6 +392,7 @@ def _call_openai_compatible(image_data: str, media_type: str, api_key: str,
             last_err = e
             time.sleep(1 * (attempt + 1))
 
+    logger.error("OpenAI-compatible API failed after 3 retries: %s", last_err)
     raise Exception(f'网络连接被异常断开，可能受当地代理软件、节点或防火墙影响 (已重试3次): {str(last_err)}')
 
 

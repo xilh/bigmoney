@@ -1,5 +1,6 @@
 import json
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -23,7 +24,9 @@ class AssetLayer(models.Model):
 
     @property
     def total_market_value(self):
-        return sum(h.market_value or Decimal('0') for h in self.holdings.all())
+        from django.db.models import Sum
+        result = self.holdings.aggregate(total=Sum('market_value'))
+        return result['total'] or Decimal('0')
 
 
 ASSET_TYPE_CHOICES = [
@@ -59,7 +62,7 @@ class Holding(models.Model):
     quantity = models.DecimalField('数量/份额', max_digits=18, decimal_places=4, default=0)
     cost_price = models.DecimalField('成本价/买入均价', max_digits=14, decimal_places=4, null=True, blank=True)
     current_price = models.DecimalField('当前价/净值', max_digits=14, decimal_places=4, null=True, blank=True)
-    market_value = models.DecimalField('市值(元)', max_digits=18, decimal_places=2, default=0)
+    market_value = models.DecimalField('市值(元)', max_digits=18, decimal_places=2, default=0, db_index=True)
     profit_loss = models.DecimalField('盈亏(元)', max_digits=18, decimal_places=2, default=0)
     profit_loss_pct = models.DecimalField('盈亏比例(%)', max_digits=10, decimal_places=4, default=0)
     source = models.CharField(
@@ -68,6 +71,8 @@ class Holding(models.Model):
     )
     platform = models.CharField('来源平台', max_length=100, blank=True,
         help_text='如：招商银行、支付宝、天天基金、雪球等')
+    is_reserve = models.BooleanField('干火药储备', default=False,
+        help_text='标记为应急储备/干火药，不参与常规再平衡部署')
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -80,19 +85,30 @@ class Holding(models.Model):
     def __str__(self):
         return f'{self.name} ({self.code})' if self.code else self.name
 
+    def clean(self):
+        if self.cost_price is not None and self.cost_price < 0:
+            raise ValidationError({'cost_price': '成本价不能为负数'})
+        if self.current_price is not None and self.current_price < 0:
+            raise ValidationError({'current_price': '当前价不能为负数'})
+        if self.quantity is not None and self.quantity < 0:
+            raise ValidationError({'quantity': '数量不能为负数'})
+
     def save(self, *args, **kwargs):
         """自动计算盈亏"""
         if self.cost_price and self.current_price and self.quantity:
             cost_total = self.cost_price * self.quantity
-            self.market_value = self.current_price * self.quantity
-            self.profit_loss = self.market_value - cost_total
-            self.profit_loss_pct = (self.profit_loss / cost_total * 100) if cost_total else Decimal('0')
+            self.market_value = (self.current_price * self.quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            self.profit_loss = (self.market_value - cost_total).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if cost_total > 0:
+                self.profit_loss_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+            else:
+                self.profit_loss_pct = Decimal('0')
         super().save(*args, **kwargs)
 
 
 class Snapshot(models.Model):
     """资产快照（用于历史记录）"""
-    date = models.DateTimeField('快照时间', default=timezone.now)
+    date = models.DateTimeField('快照时间', default=timezone.now, db_index=True)
     total_value = models.DecimalField('总资产(元)', max_digits=18, decimal_places=2, default=0)
     layer_values = models.JSONField('各层级市值', default=dict)
     layer_ratios = models.JSONField('各层级比例', default=dict)
@@ -128,7 +144,7 @@ class Transaction(models.Model):
     quantity = models.DecimalField('数量', max_digits=18, decimal_places=4, default=0)
     price = models.DecimalField('价格', max_digits=14, decimal_places=4, default=0)
     amount = models.DecimalField('金额(元)', max_digits=18, decimal_places=2, default=0)
-    date = models.DateField('操作日期', default=timezone.now)
+    date = models.DateField('操作日期', default=timezone.now, db_index=True)
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -239,3 +255,29 @@ class EvaluationReport(models.Model):
 
     def __str__(self):
         return f'{self.date.strftime("%Y-%m-%d %H:%M")} - 分数: {self.score}'
+
+
+class AlertAction(models.Model):
+    """风控预警处置记录"""
+    ACTION_CHOICES = [
+        ('acknowledged', '已知悉'),
+        ('acted', '已执行操作'),
+        ('dismissed', '暂不处理'),
+    ]
+    holding = models.ForeignKey(
+        Holding, on_delete=models.CASCADE,
+        related_name='alert_actions', verbose_name='关联持仓'
+    )
+    alert_type = models.CharField('预警类型', max_length=50,
+        help_text='如：concentration_5pct, satellite_stop_loss_30, satellite_take_profit_50')
+    action = models.CharField('处置方式', max_length=20, choices=ACTION_CHOICES)
+    notes = models.TextField('处置备注', blank=True)
+    created_at = models.DateTimeField('处置时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '预警处置'
+        verbose_name_plural = '预警处置'
+
+    def __str__(self):
+        return f'{self.holding.name} - {self.alert_type} - {self.get_action_display()}'

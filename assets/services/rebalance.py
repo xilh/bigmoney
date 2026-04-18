@@ -2,6 +2,39 @@
 再平衡计算引擎
 基于《资产配置方案》文档中的规则计算再平衡建议
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ---- 可调阈值（集中管理，未来可迁移至 Setting 模型） ----
+THRESHOLDS = {
+    # 层级偏差
+    'layer_deviation_warning': 3.0,   # %，接近阈值
+    'layer_deviation_critical': 5.0,  # %，立即调整
+
+    # 个股集中度
+    'concentration_warning': 5.0,     # %，单票占总资产上限
+    'concentration_critical': 10.0,   # %，严重超标
+
+    # 债基异常波动
+    'bond_anomaly_warning': -1.0,     # %，盈亏比例
+    'bond_anomaly_critical': -3.0,    # %
+
+    # 卫星仓位止盈阶梯
+    'satellite_tp_50': 50.0,
+    'satellite_tp_100': 100.0,
+    'satellite_tp_200': 200.0,
+
+    # 卫星仓位止损阶梯
+    'satellite_sl_30': -30.0,
+    'satellite_sl_50': -50.0,
+    'satellite_sl_70': -70.0,
+
+    # 第三层整体回撤协议
+    'drawdown_warning': -10.0,
+    'drawdown_critical': -20.0,
+    'drawdown_extreme': -30.0,
+}
 
 
 def calculate_rebalance(layers_data: list, total_value: float) -> dict:
@@ -48,15 +81,15 @@ def calculate_rebalance(layers_data: list, total_value: float) -> dict:
         }
 
         # 判断偏差状态
-        if abs(deviation) > 5:
+        if abs(deviation) > THRESHOLDS['layer_deviation_critical']:
             layer_result['status'] = 'critical'
             alerts.append({
                 "level": "critical",
                 "layer": layer['name'],
-                "message": f"{layer['name']}偏差 {deviation:+.1f}%，超过5%阈值，建议立即调整",
+                "message": f"{layer['name']}偏差 {deviation:+.1f}%，超过{THRESHOLDS['layer_deviation_critical']:.0f}%阈值，建议立即调整",
                 "action": f"{'卖出' if adjustment > 0 else '买入'} ¥{abs(adjustment):,.0f}",
             })
-        elif abs(deviation) > 3:
+        elif abs(deviation) > THRESHOLDS['layer_deviation_warning']:
             layer_result['status'] = 'warning'
             alerts.append({
                 "level": "warning",
@@ -99,105 +132,148 @@ def calculate_rebalance(layers_data: list, total_value: float) -> dict:
     }
 
 
-def calculate_risk_alerts(holdings, total_value) -> list:
+def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list:
     """
-    计算基于全部持仓的逐笔风险预警（单票超5%、卫星层止盈止损）
-    
+    计算基于全部持仓的逐笔风险预警（单票超5%、债基异常、卫星层止盈止损、回撤协议）
+
     Args:
-        holdings: QuerySet of Holding
+        holdings: QuerySet/list of Holding (需 select_related('layer'))
         total_value: 当前总资产市值
-        
+        acknowledged_keys: set of "holding_id:alert_type" strings to skip
+
     Returns:
-        list of alert dicts: [{"level": str, "source": str, "message": str, "action": str}]
+        list of alert dicts, each with: level, source, message, action, alert_type, holding_id
     """
     alerts = []
     if total_value <= 0:
         return alerts
 
+    acked = acknowledged_keys or set()
+
+    def _add(level, source, message, action, alert_type, holding_id):
+        key = f"{holding_id}:{alert_type}"
+        if key not in acked:
+            alerts.append({
+                "level": level,
+                "source": source,
+                "message": message,
+                "action": action,
+                "alert_type": alert_type,
+                "holding_id": holding_id,
+            })
+
+    # 干火药统计（Layer 1 is_reserve 标记的持仓）
+    reserve_value = sum(
+        float(h.market_value or 0) for h in holdings
+        if h.layer.order == 1 and h.is_reserve
+    )
+
+    # 按层级汇总持仓盈亏（用于回撤协议判断）
+    layer3_holdings = [h for h in holdings if h.layer.order == 3]
+    layer3_total_pl_pct = 0.0
+    if layer3_holdings:
+        layer3_cost = sum(
+            float((h.cost_price or 0) * h.quantity) for h in layer3_holdings
+            if h.cost_price and h.quantity
+        )
+        layer3_pl = sum(float(h.profit_loss or 0) for h in layer3_holdings)
+        if layer3_cost > 0:
+            layer3_total_pl_pct = layer3_pl / layer3_cost * 100
+
     for h in holdings:
-        # 1. 个股集中度预警：任何单只股票仓位不超过总资产的5%
-        # 仅适��于个股类资产，基金/ETF/黄金等不受此限制
+        h_id = h.id
+
+        # 1. 个股集中度预警
         if h.asset_type in ('stock', 'dividend_stock', 'hk_stock'):
             if h.market_value and total_value > 0:
                 pct = float(h.market_value) / total_value * 100
-                if pct > 5.0:
-                    level = "critical" if pct > 10.0 else "warning"
-                    alerts.append({
-                        "level": level,
-                        "source": h.name,
-                        "message": f"单票集中度过高（当前占比 {pct:.1f}%）",
-                        "action": "突破5%天花板，建议在本月内分批减仓至总比例的5%以下。",
-                    })
+                if pct > THRESHOLDS['concentration_warning']:
+                    level = "critical" if pct > THRESHOLDS['concentration_critical'] else "warning"
+                    _add(level, h.name,
+                         f"单票集中度过高（当前占比 {pct:.1f}%）",
+                         f"突破{THRESHOLDS['concentration_warning']:.0f}%天花板，建议在本月内分批减仓至总比例的{THRESHOLDS['concentration_warning']:.0f}%以下。",
+                         "concentration_5pct", h_id)
 
-        # 2. 债券基金异常波动预警：总盈亏比例跌幅>1%视为异常
+        # 2. 债券基金异常波动预警
         if h.asset_type in ('bond_fund', 'convertible_bond') and h.profit_loss_pct:
             pl_pct = float(h.profit_loss_pct)
-            if pl_pct < -3.0:
-                alerts.append({
-                    "level": "critical",
-                    "source": h.name,
-                    "message": f"债基异常波动（盈亏 {pl_pct:+.1f}%）",
-                    "action": "可能信用事件或极端利率环境，审视持仓是否有信用违约风险，如有则转换为利率债基金或货币基金。",
-                })
-            elif pl_pct < -1.0:
-                alerts.append({
-                    "level": "warning",
-                    "source": h.name,
-                    "message": f"债基波动偏大（盈亏 {pl_pct:+.1f}%）",
-                    "action": "检查原因：若为利率政策��击，可继续持有；考虑缩短久期，换入更短期限的债基。",
-                })
+            if pl_pct < THRESHOLDS['bond_anomaly_critical']:
+                _add("critical", h.name,
+                     f"债基异常波动（盈亏 {pl_pct:+.1f}%）",
+                     "可能信用事件或极端利率环境，审视持仓是否有信用违约风险，如有则转换为利率债基金或货币基金。",
+                     "bond_anomaly_3pct", h_id)
+            elif pl_pct < THRESHOLDS['bond_anomaly_warning']:
+                _add("warning", h.name,
+                     f"债基波动偏大（盈亏 {pl_pct:+.1f}%）",
+                     "检查原因：若为利率政策冲击，可继续持有；考虑缩短久期，换入更短期限的债基。",
+                     "bond_anomaly_1pct", h_id)
 
-        # 2. 第五层（卫星仓位）特有止损与止盈纪律
-        # 假设 layer.order=5 为第五层 (卫星仓位)
+        # 3. 第五层（卫星仓位）止盈止损纪律
         if hasattr(h, 'layer') and h.layer.order == 5 and h.profit_loss_pct:
             pl_pct = float(h.profit_loss_pct)
-            
-            # 止盈
-            if pl_pct >= 200:
-                alerts.append({
-                    "level": "success",
-                    "source": h.name,
-                    "message": f"强力复利达成（盈亏 {pl_pct:+.1f}%）",
-                    "action": "卖出三分之二部分，将利润回收到第一层或核心宽基层级，剩余部分继续持有。",
-                })
-            elif pl_pct >= 100:
-                alerts.append({
-                    "level": "success",
-                    "source": h.name,
-                    "message": f"盈利翻倍（盈亏 {pl_pct:+.1f}%）",
-                    "action": "建议卖出一半收回成本，将剩余转化为「零成本仓位」，设定最高点回撤 15% 的移动止盈线。",
-                })
-            elif pl_pct >= 50:
-                alerts.append({
-                    "level": "info",
-                    "source": h.name,
-                    "message": f"可观利润（盈亏 {pl_pct:+.1f}%）",
-                    "action": "建议设定最高点回撤 20% 的移动止盈线防坐过山车。",
-                })
-            
-            # 止损
-            if pl_pct <= -70:
-                alerts.append({
-                    "level": "critical",
-                    "source": h.name,
-                    "message": f"穿透底线（亏损 {pl_pct:+.1f}%）",
-                    "action": "无条件止损！接受「学费」，切勿补仓摆平成本，不要幻想反弹。",
-                })
-            elif pl_pct <= -50:
-                alerts.append({
-                    "level": "critical",
-                    "source": h.name,
-                    "message": f"高危亏损（亏损 {pl_pct:+.1f}%）",
-                    "action": "默认止损点已触发。除非有极其强烈的理由继续持有，否则应立刻清仓。",
-                })
-            elif pl_pct <= -30:
-                alerts.append({
-                    "level": "warning",
-                    "source": h.name,
-                    "message": f"逻辑验证预警（亏损 {pl_pct:+.1f}%）",
-                    "action": "强制重新审视投资逻辑。若写不出有说服力的持仓理由，请立即止损。",
-                })
-                
+
+            # 止盈（取最高档，不重复）
+            if pl_pct >= THRESHOLDS['satellite_tp_200']:
+                _add("success", h.name,
+                     f"强力复利达成（盈亏 {pl_pct:+.1f}%）",
+                     "卖出三分之二部分，将利润回收到第一层或核心宽基层级，剩余部分继续持有。",
+                     "satellite_tp_200", h_id)
+            elif pl_pct >= THRESHOLDS['satellite_tp_100']:
+                _add("success", h.name,
+                     f"盈利翻倍（盈亏 {pl_pct:+.1f}%）",
+                     "建议卖出一半收回成本，将剩余转化为「零成本仓位」，设定最高点回撤 15% 的移动止盈线。",
+                     "satellite_tp_100", h_id)
+            elif pl_pct >= THRESHOLDS['satellite_tp_50']:
+                _add("info", h.name,
+                     f"可观利润（盈亏 {pl_pct:+.1f}%）",
+                     "建议设定最高点回撤 20% 的移动止盈线防坐过山车。",
+                     "satellite_tp_50", h_id)
+
+            # 止损（取最严重档，不重复）
+            if pl_pct <= THRESHOLDS['satellite_sl_70']:
+                _add("critical", h.name,
+                     f"穿透底线（亏损 {pl_pct:+.1f}%）",
+                     "无条件止损！接受「学费」，切勿补仓摆平成本，不要幻想反弹。",
+                     "satellite_sl_70", h_id)
+            elif pl_pct <= THRESHOLDS['satellite_sl_50']:
+                _add("critical", h.name,
+                     f"高危亏损（亏损 {pl_pct:+.1f}%）",
+                     "默认止损点已触发。除非有极其强烈的理由继续持有，否则应立刻清仓。",
+                     "satellite_sl_50", h_id)
+            elif pl_pct <= THRESHOLDS['satellite_sl_30']:
+                _add("warning", h.name,
+                     f"逻辑验证预警（亏损 {pl_pct:+.1f}%）",
+                     "强制重新审视投资逻辑。若写不出有说服力的持仓理由，请立即止损。",
+                     "satellite_sl_30", h_id)
+
+    # 4. 第三层整体回撤 → 下跌应对协议自动建议
+    if layer3_total_pl_pct <= THRESHOLDS['drawdown_extreme']:
+        reserve_hint = f"（当前干火药储备 ¥{reserve_value:,.0f}）" if reserve_value > 0 else "（未标记干火药储备）"
+        alerts.append({
+            "level": "critical",
+            "source": "第三层·股票核心",
+            "message": f"极端恐慌回撤（整体亏损 {layer3_total_pl_pct:.1f}%）",
+            "action": f"历史性买入机会！动用全部干火药及第五层现金加仓指数基金，分3-4批、每批间隔1-2周。{reserve_hint}",
+            "alert_type": "drawdown_30", "holding_id": None,
+        })
+    elif layer3_total_pl_pct <= THRESHOLDS['drawdown_critical']:
+        reserve_hint = f"（当前干火药储备 ¥{reserve_value:,.0f}）" if reserve_value > 0 else "（未标记干火药储备）"
+        alerts.append({
+            "level": "critical",
+            "source": "第三层·股票核心",
+            "message": f"显著回撤（整体亏损 {layer3_total_pl_pct:.1f}%）",
+            "action": f"动用第一层干火药储备分三批加仓指数基金，1-2周内启动第一批。{reserve_hint}",
+            "alert_type": "drawdown_20", "holding_id": None,
+        })
+    elif layer3_total_pl_pct <= THRESHOLDS['drawdown_warning']:
+        alerts.append({
+            "level": "warning",
+            "source": "第三层·股票核心",
+            "message": f"明显调整（整体亏损 {layer3_total_pl_pct:.1f}%）",
+            "action": "检查各层级偏差，如触发5%偏差则执行触发式再平衡，季度检视时处理。",
+            "alert_type": "drawdown_10", "holding_id": None,
+        })
+
     return alerts
 
 

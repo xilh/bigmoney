@@ -3,12 +3,18 @@ import os
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+import logging
+
 from django.conf import settings as django_settings
+from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
@@ -379,27 +385,41 @@ def api_holding_create(request):
     try:
         data = json.loads(request.body)
         layer = get_object_or_404(AssetLayer, id=data['layer_id'])
-        holding = Holding.objects.create(
+
+        quantity = Decimal(str(data.get('quantity', 0)))
+        cost_price = Decimal(str(data['cost_price'])) if data.get('cost_price') else None
+        current_price = Decimal(str(data['current_price'])) if data.get('current_price') else None
+        market_value = Decimal(str(data.get('market_value', 0)))
+
+        # Validate non-negative
+        if quantity < 0 or market_value < 0:
+            return JsonResponse({'success': False, 'error': '数量和市值不能为负数'}, status=400)
+        if cost_price is not None and cost_price < 0:
+            return JsonResponse({'success': False, 'error': '成本价不能为负数'}, status=400)
+
+        holding = Holding(
             layer=layer,
             name=data['name'],
             code=data.get('code', ''),
             asset_type=data.get('asset_type', 'other'),
-            quantity=Decimal(str(data.get('quantity', 0))),
-            cost_price=Decimal(str(data['cost_price'])) if data.get('cost_price') else None,
-            current_price=Decimal(str(data['current_price'])) if data.get('current_price') else None,
-            market_value=Decimal(str(data.get('market_value', 0))),
+            quantity=quantity,
+            cost_price=cost_price,
+            current_price=current_price,
+            market_value=market_value,
             source=data.get('source', 'manual'),
             platform=data.get('platform', ''),
             notes=data.get('notes', ''),
         )
-        # If market_value was directly provided and no price info, use it directly
-        if not holding.current_price and data.get('market_value'):
-            holding.market_value = Decimal(str(data['market_value']))
-            Holding.objects.filter(pk=holding.pk).update(market_value=holding.market_value)
+        # save() will auto-calculate P&L if price info exists;
+        # if no price info, the directly-provided market_value is preserved.
+        holding.save()
 
         return JsonResponse({'success': True, 'id': holding.id})
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    except Exception as e:
+        logger.exception("api_holding_create failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @require_http_methods(["PUT"])
@@ -580,7 +600,8 @@ def api_upload_screenshot(request):
             'existing_holdings': existing_holdings,
         })
     except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+        logger.exception("api_upload_screenshot failed")
+        return JsonResponse({'success': False, 'error': f'识别过程出错: {type(e).__name__}'}, status=500)
 
 
 @require_POST
@@ -599,86 +620,95 @@ def api_confirm_upload(request):
                     'success': False,
                     'error': '该截图已确认过，不可重复确认。如需更新数据请重新上传。',
                 }, status=400)
-            upload.status = 'confirmed'
-            if platform:
-                upload.platform = platform
-            upload.save()
 
         created_count = 0
         updated_count = 0
-        for item in items:
-            layer_id = item.get('layer_id')
-            if not layer_id:
-                # 根据 suggested_layer 分配
-                suggested = item.get('suggested_layer', 1)
-                layer = AssetLayer.objects.filter(order=suggested).first()
-                if not layer:
-                    layer = AssetLayer.objects.first()
-            else:
-                layer = get_object_or_404(AssetLayer, id=layer_id)
 
-            # 使用 item 级别的 platform，或全局 platform
-            item_platform = item.get('platform', platform)
+        with transaction.atomic():
+            if upload_id:
+                upload.status = 'confirmed'
+                if platform:
+                    upload.platform = platform
+                upload.save()
 
-            # 查找同名且同平台的持仓，如果存在则更新
-            holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
-            holding_existed = holding is not None
-            
-            # 准备数据
-            code = item.get('code', '')
-            asset_type = item.get('asset_type', 'other')
-            quantity = Decimal(str(item.get('quantity', 0)))
-            cost_price = Decimal(str(item['cost_price'])) if item.get('cost_price') else None
-            current_price = Decimal(str(item['current_price'])) if item.get('current_price') else None
-            market_value = Decimal(str(item.get('market_value', 0)))
-            profit_loss = Decimal(str(item.get('profit_loss', 0)))
-            profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
+            for item in items:
+                layer_id = item.get('layer_id')
+                if not layer_id:
+                    suggested = item.get('suggested_layer', 1)
+                    layer = AssetLayer.objects.filter(order=suggested).first()
+                    if not layer:
+                        layer = AssetLayer.objects.first()
+                else:
+                    layer = get_object_or_404(AssetLayer, id=layer_id)
 
-            if holding:
-                # 更新现有持仓（保留用户已分配的层级）
-                if code:
-                    holding.code = code
-                holding.asset_type = asset_type
-                holding.quantity = quantity
-                holding.cost_price = cost_price
-                holding.current_price = current_price
-                holding.market_value = market_value
-                holding.profit_loss = profit_loss
-                holding.profit_loss_pct = profit_loss_pct
-                holding.source = 'screenshot'
-                holding.save()
-                updated_count += 1
-            else:
-                # 创建新持仓
-                holding = Holding.objects.create(
-                    layer=layer,
-                    name=item['name'],
-                    code=code,
-                    asset_type=asset_type,
-                    quantity=quantity,
-                    cost_price=cost_price,
-                    current_price=current_price,
-                    market_value=market_value,
-                    profit_loss=profit_loss,
-                    profit_loss_pct=profit_loss_pct,
-                    source='screenshot',
-                    platform=item_platform,
-                )
+                item_platform = item.get('platform', platform)
 
-            # Preserve exact screenshot values if missing prices (overrides recalculation if happened)
-            if not holding.current_price and item.get('market_value'):
-                Holding.objects.filter(pk=holding.pk).update(
-                    market_value=market_value,
-                    profit_loss=profit_loss,
-                    profit_loss_pct=profit_loss_pct,
-                )
+                holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
+                holding_existed = holding is not None
 
-            if not holding_existed:
-                created_count += 1
+                code = item.get('code', '')
+                asset_type = item.get('asset_type', 'other')
+                quantity = Decimal(str(item.get('quantity', 0)))
+                cost_price = Decimal(str(item['cost_price'])) if item.get('cost_price') else None
+                current_price = Decimal(str(item['current_price'])) if item.get('current_price') else None
+                market_value = Decimal(str(item.get('market_value', 0)))
+                profit_loss = Decimal(str(item.get('profit_loss', 0)))
+                profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
+
+                has_price_info = bool(cost_price and current_price and quantity)
+
+                if holding:
+                    if code:
+                        holding.code = code
+                    holding.asset_type = asset_type
+                    holding.quantity = quantity
+                    holding.cost_price = cost_price
+                    holding.current_price = current_price
+                    # Only set raw values if save() won't auto-calculate
+                    if not has_price_info:
+                        holding.market_value = market_value
+                        holding.profit_loss = profit_loss
+                        holding.profit_loss_pct = profit_loss_pct
+                    holding.source = 'screenshot'
+                    holding.save()
+                    # For holdings without price info, ensure screenshot values stick
+                    if not has_price_info and item.get('market_value'):
+                        Holding.objects.filter(pk=holding.pk).update(
+                            market_value=market_value,
+                            profit_loss=profit_loss,
+                            profit_loss_pct=profit_loss_pct,
+                        )
+                    updated_count += 1
+                else:
+                    holding = Holding(
+                        layer=layer,
+                        name=item['name'],
+                        code=code,
+                        asset_type=asset_type,
+                        quantity=quantity,
+                        cost_price=cost_price,
+                        current_price=current_price,
+                        market_value=market_value,
+                        profit_loss=profit_loss,
+                        profit_loss_pct=profit_loss_pct,
+                        source='screenshot',
+                        platform=item_platform,
+                    )
+                    holding.save()
+                    if not has_price_info and item.get('market_value'):
+                        Holding.objects.filter(pk=holding.pk).update(
+                            market_value=market_value,
+                            profit_loss=profit_loss,
+                            profit_loss_pct=profit_loss_pct,
+                        )
+                    created_count += 1
 
         return JsonResponse({'success': True, 'created': created_count, 'updated': updated_count})
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    except Exception as e:
+        logger.exception("api_confirm_upload failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @require_POST
@@ -725,6 +755,8 @@ def api_snapshot_create(request):
         if not integrity_ok:
             diff = holdings_sum - layers_sum
             warning = f'数据完整性警告：持仓明细合计与层级合计差 ¥{diff:,.0f}，可能存在重复或遗漏持仓'
+            logger.warning("Snapshot integrity check failed: holdings_sum=%.2f, layers_sum=%.2f, diff=%.2f",
+                           holdings_sum, layers_sum, diff)
 
         result = {
             'success': True,

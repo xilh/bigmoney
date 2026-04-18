@@ -4,7 +4,10 @@ AI 投资顾问服务
 复用 Setting 中的 LLM 配置（与 OCR 共享 provider 设置）。
 """
 import json
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 import anthropic
 import httpx
@@ -126,6 +129,7 @@ def evaluate_portfolio(layers_data, holdings_data, total_value):
         else:
             return _call_openai_compatible(user_message, config)
     except Exception as e:
+        logger.exception("evaluate_portfolio failed")
         return {'success': False, 'data': None, 'error': str(e)}
 
 

@@ -1,7 +1,10 @@
 import datetime
+import logging
 from decimal import Decimal
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime, parse_date
+
+logger = logging.getLogger(__name__)
 
 from assets.models import Snapshot, Transaction
 
@@ -77,6 +80,12 @@ def calculate_interval_performance(start_date_str, end_date_str):
     if adjusted_capital > 0:
         return_rate = profit / adjusted_capital
     elif adjusted_capital < 0:
+        logger.warning(
+            "Modified Dietz: negative adjusted capital (%.2f). "
+            "Large withdrawals may distort return calculation. "
+            "start_value=%.2f, weighted_cf=%.2f",
+            adjusted_capital, start_value, weighted_cf,
+        )
         return_rate = profit / abs(adjusted_capital)
     else:
         return_rate = Decimal('0')
