@@ -1,0 +1,86 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}资产总览{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between" style="margin-bottom: 12px;">
+    <h2>资产总览</h2>
+    <span class="text-xs text-muted">{{ current_holdings|length }} 项持仓 &middot; {{ historical_assets|length }} 项已清仓</span>
+</div>
+
+<!-- Current Holdings -->
+<div class="card animate-in" style="margin-bottom: 12px;">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>当前持仓</h3>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="table">
+            <thead><tr>
+                <th>名称</th><th>层级</th><th>平台</th><th>市值</th><th>盈亏</th><th>盈亏%</th>
+            </tr></thead>
+            <tbody>
+            {% for h in current_holdings %}
+            <tr style="cursor:pointer;" onclick="location.href='{% url 'assets:asset_detail' h.id %}'">
+                <td>
+                    <strong>{{ h.name }}</strong>
+                    <span class="text-xs text-muted">{{ h.asset_type_display }}</span>
+                </td>
+                <td class="text-xs">{{ h.layer__name }}</td>
+                <td class="text-xs">{{ h.platform }}</td>
+                <td class="font-mono">¥{{ h.market_value|floatformat:0 }}</td>
+                <td class="font-mono {% if h.profit_loss >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if h.profit_loss >= 0 %}+{% endif %}¥{{ h.profit_loss|floatformat:0 }}
+                </td>
+                <td class="font-mono {% if h.profit_loss_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if h.profit_loss_pct >= 0 %}+{% endif %}{{ h.profit_loss_pct|floatformat:2 }}%
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="text-center text-muted" style="padding:24px;">暂无持仓</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Historical (Sold) Assets -->
+{% if historical_assets %}
+<div class="card animate-in stagger-1">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>已清仓资产</h3>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="table">
+            <thead><tr>
+                <th>名称</th><th>平台</th><th>最后交易</th><th>累计买入</th><th>累计卖出</th><th>已实现盈亏</th>
+            </tr></thead>
+            <tbody>
+            {% for h in historical_assets %}
+            <tr style="cursor:pointer;" onclick="location.href='{% url 'assets:asset_detail_by_name' %}?name={{ h.name|urlencode }}'">
+                <td>
+                    <strong>{{ h.name }}</strong>
+                    <span class="badge badge-neutral" style="font-size:0.6rem;">已清仓</span>
+                </td>
+                <td class="text-xs">{{ h.platform }}</td>
+                <td class="text-xs">{{ h.last_date }}</td>
+                <td class="font-mono">¥{{ h.total_buy|default:"0"|floatformat:0 }}</td>
+                <td class="font-mono">¥{{ h.total_sell|default:"0"|floatformat:0 }}</td>
+                <td class="font-mono {% if h.realized_pnl and h.realized_pnl >= 0 %}text-success{% elif h.realized_pnl %}text-danger{% endif %}">
+                    {% if h.realized_pnl %}{% if h.realized_pnl >= 0 %}+{% endif %}¥{{ h.realized_pnl|floatformat:0 }}{% else %}--{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<style>
+.table tbody tr[onclick] { transition: background 0.15s; }
+.table tbody tr[onclick]:hover { background: rgba(255,255,255,0.03); }
+</style>
+{% endblock %}

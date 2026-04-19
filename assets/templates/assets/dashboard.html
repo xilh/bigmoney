@@ -21,7 +21,7 @@
         <div class="stat-sub">{{ holdings_count }} 项持仓</div>
     </div>
     <div class="stat-card card-compact">
-        <div class="stat-label">总盈亏</div>
+        <div class="stat-label">持仓盈亏</div>
         <div class="stat-value {% if total_profit >= 0 %}positive{% else %}negative{% endif %}">
             {% if total_profit >= 0 %}+{% endif %}¥{{ total_profit|floatformat:0 }}
         </div>
@@ -156,7 +156,7 @@
                     <tr>
                         <td class="text-muted" style="padding: 8px 16px;">{{ tx.date|date:"m-d" }}</td>
                         <td style="padding: 8px 4px;"><span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span></td>
-                        <td style="padding: 8px 4px;">{{ tx.asset_name }}</td>
+                        <td style="padding: 8px 4px;"><a href="{% url 'assets:asset_detail_by_name' %}?name={{ tx.asset_name|urlencode }}" style="color:inherit;">{{ tx.asset_name }}</a></td>
                         <td class="text-right font-mono" style="padding: 8px 16px;">¥{{ tx.amount|floatformat:0 }}</td>
                     </tr>
                     {% endfor %}

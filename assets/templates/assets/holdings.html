@@ -86,7 +86,7 @@
                 <tbody>
                     {% for h in layer.holdings.all %}
                     <tr id="holding-row-{{ h.id }}">
-                        <td><strong>{{ h.name }}</strong></td>
+                        <td><a href="{% url 'assets:asset_detail' h.id %}" style="color:inherit;"><strong>{{ h.name }}</strong></a></td>
                         <td class="text-muted text-sm">{{ h.platform|default:"-" }}</td>
                         <td class="text-muted font-mono">{{ h.code|default:"-" }}</td>
                         <td><span class="badge badge-neutral">{{ h.get_asset_type_display }}</span></td>

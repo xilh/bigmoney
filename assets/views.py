@@ -1244,6 +1244,158 @@ def api_test_llm(request):
         return JsonResponse({'success': False, 'error': str(e)})
 
 
+# ==================== 资产详情 ====================
+
+def asset_list_page(request):
+    """所有资产列表（含已清仓）"""
+    # 当前持仓
+    current_holdings = list(
+        Holding.objects.select_related('layer').all()
+        .values('id', 'name', 'code', 'asset_type', 'platform',
+                'market_value', 'profit_loss', 'profit_loss_pct', 'layer__name')
+    )
+    current_names = {h['name'] for h in current_holdings}
+
+    # 从交易记录中找到已清仓的资产
+    from django.db.models import Max, Sum, Q
+    historical = list(
+        Transaction.objects.exclude(asset_name__in=current_names)
+        .exclude(action__in=['transfer', 'withdraw'])
+        .values('asset_name', 'platform')
+        .annotate(
+            last_date=Max('date'),
+            total_buy=Sum('amount', filter=Q(action='buy')),
+            total_sell=Sum('amount', filter=Q(action='sell')),
+            realized_pnl=Sum('realized_pnl', filter=Q(action='sell')),
+        )
+        .order_by('-last_date')
+    )
+
+    asset_type_labels = dict(ASSET_TYPE_CHOICES)
+    for h in current_holdings:
+        h['asset_type_display'] = asset_type_labels.get(h['asset_type'], h['asset_type'])
+        h['status'] = 'active'
+
+    for h in historical:
+        h['status'] = 'sold'
+        h['name'] = h['asset_name']
+
+    context = {
+        'current_holdings': current_holdings,
+        'historical_assets': historical,
+    }
+    return render(request, 'assets/asset_list.html', context)
+
+
+def asset_detail_by_name(request):
+    """通过 asset_name 查询资产详情（用于已清仓资产）"""
+    name = request.GET.get('name', '')
+    if not name:
+        from django.http import Http404
+        raise Http404
+    # 尝试匹配当前持仓
+    holding = Holding.objects.filter(name=name).first()
+    if holding:
+        from django.shortcuts import redirect
+        return redirect('assets:asset_detail', holding_id=holding.id)
+    # 已清仓 — 直接渲染
+    return _render_asset_detail(request, holding=None, asset_name=name)
+
+
+def asset_detail_page(request, holding_id):
+    """资产详情页（当前持仓）"""
+    holding = get_object_or_404(Holding, id=holding_id)
+    return _render_asset_detail(request, holding=holding, asset_name=holding.name)
+
+
+def _render_asset_detail(request, holding, asset_name):
+    """渲染资产详情页的共用逻辑"""
+    # 1. 交易记录
+    transactions = list(
+        Transaction.objects.filter(asset_name=asset_name)
+        .order_by('-date', '-created_at')
+        .values('id', 'action', 'asset_name', 'quantity', 'price',
+                'amount', 'date', 'source', 'realized_pnl', 'platform', 'notes')
+    )
+    action_labels = dict(Transaction.ACTION_CHOICES)
+    source_labels = dict(Transaction.SOURCE_CHOICES)
+    for tx in transactions:
+        tx['action_display'] = action_labels.get(tx['action'], tx['action'])
+        tx['source_display'] = source_labels.get(tx['source'], tx['source'])
+
+    # 2. 从快照中提取该资产的历史市值
+    snapshots = Snapshot.objects.order_by('date').values('date', 'holdings_data')
+    value_history = []
+    for snap in snapshots:
+        for h in (snap['holdings_data'] or []):
+            if h.get('name') == asset_name:
+                value_history.append({
+                    'date': snap['date'].strftime('%Y-%m-%d'),
+                    'market_value': h.get('market_value', 0),
+                    'profit_loss': h.get('profit_loss', 0),
+                    'profit_loss_pct': h.get('profit_loss_pct', 0),
+                })
+                break
+
+    # 3. AI 评估历史
+    reports = EvaluationReport.objects.order_by('-date').values('date', 'holdings_data', 'score')
+    evaluations = []
+    for rpt in reports:
+        for h in (rpt['holdings_data'] or []):
+            if h.get('name') == asset_name:
+                evaluations.append({
+                    'date': rpt['date'].strftime('%Y-%m-%d %H:%M'),
+                    'signal': h.get('signal', ''),
+                    'signal_reason': h.get('signal_reason', ''),
+                    'risk_level': h.get('risk_level', ''),
+                    'comment': h.get('comment', ''),
+                    'portfolio_score': rpt['score'],
+                })
+                break
+
+    # 4. 汇总统计
+    total_bought = sum(tx['amount'] for tx in transactions if tx['action'] == 'buy')
+    total_sold = sum(tx['amount'] for tx in transactions if tx['action'] == 'sell')
+    total_realized = sum(
+        (tx['realized_pnl'] or 0) for tx in transactions if tx['action'] == 'sell'
+    )
+    is_active = holding is not None
+
+    # 当前持仓信息
+    holding_data = None
+    if holding:
+        holding_data = {
+            'id': holding.id,
+            'name': holding.name,
+            'code': holding.code,
+            'asset_type': holding.asset_type,
+            'asset_type_display': dict(ASSET_TYPE_CHOICES).get(holding.asset_type, holding.asset_type),
+            'layer_name': holding.layer.name,
+            'platform': holding.platform,
+            'quantity': holding.quantity,
+            'cost_price': holding.cost_price,
+            'current_price': holding.current_price,
+            'market_value': holding.market_value,
+            'cost_total': (holding.cost_price or 0) * (holding.quantity or 0),
+            'profit_loss': holding.profit_loss,
+            'profit_loss_pct': holding.profit_loss_pct,
+        }
+
+    context = {
+        'asset_name': asset_name,
+        'holding': holding_data,
+        'is_active': is_active,
+        'transactions': transactions,
+        'value_history_json': json.dumps(value_history, ensure_ascii=False),
+        'evaluations': evaluations,
+        'total_bought': total_bought,
+        'total_sold': total_sold,
+        'total_realized': total_realized,
+        'tx_count': len(transactions),
+    }
+    return render(request, 'assets/asset_detail.html', context)
+
+
 # ==================== 资金流向 ====================
 
 def cashflow_page(request):

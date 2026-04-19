@@ -1,0 +1,177 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}{{ asset_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between" style="margin-bottom: 12px;">
+    <div style="display:flex; align-items:center; gap:12px;">
+        <a href="{% url 'assets:asset_list' %}" class="btn btn-sm btn-secondary" style="padding:2px 10px;">&larr;</a>
+        <div>
+            <h2 style="margin:0;">{{ asset_name }}</h2>
+            {% if holding %}
+            <span class="text-xs text-muted">{{ holding.code }}{% if holding.code and holding.platform %} &middot; {% endif %}{{ holding.platform }} &middot; {{ holding.asset_type_display }} &middot; {{ holding.layer_name }}</span>
+            {% else %}
+            <span class="badge badge-neutral" style="font-size:0.7rem;">已清仓</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="stats-grid animate-in" style="margin-bottom: 12px;">
+    {% if holding %}
+    <div class="stat-card card-compact">
+        <div class="stat-label">当前市值</div>
+        <div class="stat-value">¥{{ holding.market_value|floatformat:0 }}</div>
+        <div class="stat-sub">{{ holding.quantity|floatformat:2 }} 份 &times; ¥{{ holding.current_price|floatformat:4 }}</div>
+    </div>
+    <div class="stat-card card-compact">
+        <div class="stat-label">持仓盈亏</div>
+        <div class="stat-value {% if holding.profit_loss >= 0 %}positive{% else %}negative{% endif %}">
+            {% if holding.profit_loss >= 0 %}+{% endif %}¥{{ holding.profit_loss|floatformat:0 }}
+        </div>
+        <div class="stat-sub">成本 ¥{{ holding.cost_total|floatformat:0 }}，收益率 {% if holding.profit_loss_pct >= 0 %}+{% endif %}{{ holding.profit_loss_pct|floatformat:2 }}%</div>
+    </div>
+    {% endif %}
+    <div class="stat-card card-compact">
+        <div class="stat-label">累计买入</div>
+        <div class="stat-value">¥{{ total_bought|floatformat:0 }}</div>
+        <div class="stat-sub">{{ tx_count }} 笔交易</div>
+    </div>
+    <div class="stat-card card-compact">
+        <div class="stat-label">累计卖出</div>
+        <div class="stat-value">¥{{ total_sold|floatformat:0 }}</div>
+        <div class="stat-sub">已实现 {% if total_realized >= 0 %}+{% endif %}¥{{ total_realized|floatformat:0 }}</div>
+    </div>
+</div>
+
+<!-- Value History Chart -->
+<div class="card animate-in stagger-1" style="margin-bottom: 12px;">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>市值走势</h3>
+    </div>
+    <div class="card-body" style="padding: 12px 16px;">
+        <div style="height: 240px;"><canvas id="valueChart"></canvas></div>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+    <!-- Transaction History -->
+    <div class="card animate-in stagger-2">
+        <div class="card-header" style="padding: 10px 16px;">
+            <h3>交易记录</h3>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            <table class="table">
+                <thead><tr>
+                    <th>日期</th><th>类型</th><th>数量</th><th>价格</th><th>金额</th><th>来源</th>
+                </tr></thead>
+                <tbody>
+                {% for tx in transactions %}
+                <tr>
+                    <td style="white-space:nowrap;">{{ tx.date }}</td>
+                    <td>
+                        <span class="badge {% if tx.action == 'buy' %}badge-success{% elif tx.action == 'sell' %}badge-danger{% else %}badge-neutral{% endif %}">
+                            {{ tx.action_display }}
+                        </span>
+                    </td>
+                    <td class="font-mono">{% if tx.quantity %}{{ tx.quantity|floatformat:2 }}{% endif %}</td>
+                    <td class="font-mono">{% if tx.price %}¥{{ tx.price|floatformat:4 }}{% endif %}</td>
+                    <td class="font-mono" style="white-space:nowrap;">
+                        ¥{{ tx.amount|floatformat:0 }}
+                        {% if tx.realized_pnl %}
+                        <span class="text-xs {% if tx.realized_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">
+                            ({% if tx.realized_pnl >= 0 %}+{% endif %}{{ tx.realized_pnl|floatformat:0 }})
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td><span class="badge badge-neutral" style="font-size:0.6rem;">{{ tx.source_display }}</span></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" class="text-center text-muted" style="padding:24px;">暂无交易记录</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- AI Evaluations -->
+    <div class="card animate-in stagger-3">
+        <div class="card-header" style="padding: 10px 16px;">
+            <h3>AI 评估历史</h3>
+        </div>
+        <div class="card-body" style="padding: 0;">
+            {% if evaluations %}
+            <div style="display:flex; flex-direction:column;">
+                {% for ev in evaluations %}
+                <div style="padding: 12px 16px; border-bottom: 1px solid var(--color-border);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span class="text-xs text-muted">{{ ev.date }}</span>
+                        <div style="display:flex; gap:6px;">
+                            <span class="badge {% if ev.signal == 'buy' %}badge-success{% elif ev.signal == 'sell' %}badge-danger{% elif ev.signal == 'hold' %}badge-neutral{% else %}badge-warning{% endif %}" style="font-size:0.7rem;">
+                                {% if ev.signal == 'buy' %}买入{% elif ev.signal == 'sell' %}卖出{% elif ev.signal == 'hold' %}持有{% else %}观望{% endif %}
+                            </span>
+                            <span class="badge {% if ev.risk_level == 'low' %}badge-success{% elif ev.risk_level == 'medium' %}badge-warning{% elif ev.risk_level == 'high' %}badge-danger{% else %}badge-danger{% endif %}" style="font-size:0.65rem;">
+                                风险:{{ ev.risk_level }}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-sm" style="margin-bottom:4px;"><strong>{{ ev.signal_reason }}</strong></div>
+                    <div class="text-xs text-muted">{{ ev.comment }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center text-muted" style="padding:24px;">暂无 AI 评估记录。前往 <a href="{% url 'assets:advisor' %}" style="color:var(--color-primary);">AI 顾问</a> 生成评估。</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const valueData = JSON.parse('{{ value_history_json|escapejs }}');
+
+if (valueData.length > 1) {
+    new Chart(document.getElementById('valueChart'), {
+        type: 'line',
+        data: {
+            labels: valueData.map(d => d.date),
+            datasets: [{
+                label: '市值',
+                data: valueData.map(d => d.market_value),
+                borderColor: '#3b82f6',
+                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 3,
+            }, {
+                label: '盈亏',
+                data: valueData.map(d => d.profit_loss),
+                borderColor: valueData[valueData.length-1].profit_loss >= 0 ? '#22c55e' : '#ef4444',
+                borderDash: [4, 4],
+                tension: 0.3,
+                pointRadius: 2,
+                fill: false,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {labels: {color: '#ccc'}},
+                datalabels: {display: false},
+            },
+            scales: {
+                x: {ticks: {color: '#999', maxTicksLimit: 10}, grid: {display: false}},
+                y: {ticks: {color: '#999'}, grid: {color: 'rgba(255,255,255,0.05)'}},
+            },
+        },
+    });
+} else {
+    document.getElementById('valueChart').parentElement.innerHTML = '<div class="text-center text-muted" style="padding:60px 0;">需要至少两张快照才能绘制走势图</div>';
+}
+</script>
+{% endblock %}

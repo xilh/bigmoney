@@ -35,6 +35,10 @@
                     <span class="nav-icon">⚖️</span>
                     <span>再平衡</span>
                 </a>
+                <a href="{% url 'assets:asset_list' %}" class="nav-item {% if request.resolver_match.url_name == 'asset_list' or request.resolver_match.url_name == 'asset_detail' or request.resolver_match.url_name == 'asset_detail_by_name' %}active{% endif %}">
+                    <span class="nav-icon">📋</span>
+                    <span>资产总览</span>
+                </a>
                 <a href="{% url 'assets:cashflow' %}" class="nav-item {% if request.resolver_match.url_name == 'cashflow' %}active{% endif %}">
                     <span class="nav-icon">💸</span>
                     <span>资金流向</span>

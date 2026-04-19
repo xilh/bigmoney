@@ -184,7 +184,7 @@
                         <td style="padding: 6px 4px;">
                             <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
                         </td>
-                        <td style="padding: 6px 4px;">{{ tx.asset_name }}{% if tx.source == 'auto' or tx.source == 'ocr' %} <span class="badge badge-neutral" style="font-size:0.6rem;">自动</span>{% endif %}</td>
+                        <td style="padding: 6px 4px;"><a href="{% url 'assets:asset_detail_by_name' %}?name={{ tx.asset_name|urlencode }}" style="color:inherit;">{{ tx.asset_name }}</a>{% if tx.source == 'auto' or tx.source == 'ocr' %} <span class="badge badge-neutral" style="font-size:0.6rem;">自动</span>{% endif %}</td>
                         <td class="text-right font-mono" style="padding: 6px 8px; white-space: nowrap;">¥{{ tx.amount|floatformat:0 }}{% if tx.realized_pnl %} <span class="text-xs {% if tx.realized_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">({{ tx.realized_pnl|floatformat:0 }})</span>{% endif %}</td>
                         <td style="padding: 6px 8px; white-space: nowrap;">
                             <button class="btn btn-sm btn-secondary" style="padding: 1px 6px; font-size: 0.7rem;" onclick="editTx({{ tx.id }}, '{{ tx.action }}', '{{ tx.date|date:"Y-m-d" }}', '{{ tx.asset_name }}', {{ tx.amount }}, '{{ tx.notes|escapejs }}')">编辑</button>

@@ -126,7 +126,7 @@
                         {{ tx.action_display }}
                     </span>
                 </td>
-                <td>{{ tx.asset_name }}{% if tx.platform %} <span class="text-xs text-muted">{{ tx.platform }}</span>{% endif %}</td>
+                <td><a href="{% url 'assets:asset_detail_by_name' %}?name={{ tx.asset_name|urlencode }}" style="color:inherit;">{{ tx.asset_name }}</a>{% if tx.platform %} <span class="text-xs text-muted">{{ tx.platform }}</span>{% endif %}</td>
                 <td class="font-mono" style="white-space:nowrap;">
                     ¥{{ tx.amount|floatformat:0 }}
                     {% if tx.realized_pnl %}
