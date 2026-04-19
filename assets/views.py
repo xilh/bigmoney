@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
     Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES,
-    EvaluationReport
+    EvaluationReport,
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
     calculate_rebalance, DRAWDOWN_PROTOCOLS
 )
 from .services.advisor import evaluate_portfolio
+from .services.ledger import snapshot_holding, record_holding_change, record_holding_removal
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -108,6 +109,16 @@ def dashboard(request):
             'value': float(item['total'] or 0)
         })
 
+    # 本月资金流入/流出（从交易记录推算）
+    month_start = date.today().replace(day=1)
+    month_transfers = Transaction.objects.filter(
+        action='transfer', date__gte=month_start,
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    month_withdrawals = Transaction.objects.filter(
+        action='withdraw', date__gte=month_start,
+    ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    month_net_flow = month_transfers - month_withdrawals
+
     context = {
         'total_value': total_value,
         'total_profit': total_profit,
@@ -119,6 +130,7 @@ def dashboard(request):
         'deviation_alerts': deviation_alerts,
         'risk_alerts': risk_alerts,
         'holdings_count': Holding.objects.count(),
+        'month_net_flow': month_net_flow,
     }
     return render(request, 'assets/dashboard.html', context)
 
@@ -414,6 +426,8 @@ def api_holding_create(request):
         # if no price info, the directly-provided market_value is preserved.
         holding.save()
 
+        record_holding_change(holding, old_data=None, source='manual')
+
         return JsonResponse({'success': True, 'id': holding.id})
     except (ValueError, KeyError) as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -428,6 +442,8 @@ def api_holding_update(request, holding_id):
     try:
         holding = get_object_or_404(Holding, id=holding_id)
         data = json.loads(request.body)
+
+        old_data = snapshot_holding(holding)
 
         if 'layer_id' in data:
             holding.layer = get_object_or_404(AssetLayer, id=data['layer_id'])
@@ -451,6 +467,9 @@ def api_holding_update(request, holding_id):
             holding.platform = data['platform']
 
         holding.save()
+
+        record_holding_change(holding, old_data, source='manual')
+
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
@@ -461,6 +480,7 @@ def api_holding_delete(request, holding_id):
     """删除持仓"""
     try:
         holding = get_object_or_404(Holding, id=holding_id)
+        record_holding_removal(holding, source='manual')
         holding.delete()
         return JsonResponse({'success': True})
     except Exception as e:
@@ -658,26 +678,26 @@ def api_confirm_upload(request):
                 has_price_info = bool(cost_price and current_price and quantity)
 
                 if holding:
+                    old_data = snapshot_holding(holding)
                     if code:
                         holding.code = code
                     holding.asset_type = asset_type
                     holding.quantity = quantity
                     holding.cost_price = cost_price
                     holding.current_price = current_price
-                    # Only set raw values if save() won't auto-calculate
                     if not has_price_info:
                         holding.market_value = market_value
                         holding.profit_loss = profit_loss
                         holding.profit_loss_pct = profit_loss_pct
                     holding.source = 'screenshot'
                     holding.save()
-                    # For holdings without price info, ensure screenshot values stick
                     if not has_price_info and item.get('market_value'):
                         Holding.objects.filter(pk=holding.pk).update(
                             market_value=market_value,
                             profit_loss=profit_loss,
                             profit_loss_pct=profit_loss_pct,
                         )
+                    record_holding_change(holding, old_data, source='ocr')
                     updated_count += 1
                 else:
                     holding = Holding(
@@ -701,9 +721,28 @@ def api_confirm_upload(request):
                             profit_loss=profit_loss,
                             profit_loss_pct=profit_loss_pct,
                         )
+                    record_holding_change(holding, old_data=None, source='ocr')
                     created_count += 1
 
-        return JsonResponse({'success': True, 'created': created_count, 'updated': updated_count})
+            # Auto-remove holdings that disappeared from OCR results for this platform
+            auto_remove = data.get('auto_remove_missing', False)
+            if auto_remove and platform:
+                ocr_names = {item['name'] for item in items}
+                missing = Holding.objects.filter(
+                    platform=platform, source='screenshot',
+                ).exclude(name__in=ocr_names)
+                removed_count = 0
+                for h in missing:
+                    record_holding_removal(h, source='ocr')
+                    h.delete()
+                    removed_count += 1
+            else:
+                removed_count = 0
+
+        result = {'success': True, 'created': created_count, 'updated': updated_count}
+        if removed_count:
+            result['removed'] = removed_count
+        return JsonResponse(result)
     except (ValueError, KeyError) as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
     except Exception as e:
@@ -1177,3 +1216,50 @@ def api_test_llm(request):
         return JsonResponse({'success': False, 'error': f'HTTP {e.response.status_code}: {e.response.text[:200]}'})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
+
+
+# ==================== 资金流向 ====================
+
+def cashflow_page(request):
+    """资金流向分析页面 — 从快照和交易记录自动推算"""
+    from .services.cashflow import analyze_portfolio_flows
+    analysis = analyze_portfolio_flows()
+    context = {
+        'summary': analysis['summary'],
+        'periods': analysis['periods'],
+        'recent_transactions': analysis['recent_transactions'],
+        'monthly_json': json.dumps(analysis['monthly_chart'], cls=DecimalEncoder, ensure_ascii=False),
+        'action_json': json.dumps(analysis['action_chart'], cls=DecimalEncoder, ensure_ascii=False),
+    }
+    return render(request, 'assets/cashflow.html', context)
+
+
+@require_POST
+def api_cashflow_confirm(request):
+    """确认推算的资金流向 — 创建 transfer/withdraw 交易记录"""
+    try:
+        data = json.loads(request.body)
+        action = data.get('action')  # 'transfer' or 'withdraw'
+        amount = Decimal(str(data.get('amount', 0)))
+        tx_date = data.get('date') or date.today().isoformat()
+        notes = data.get('notes', '')
+
+        if action not in ('transfer', 'withdraw'):
+            return JsonResponse({'success': False, 'error': '类型必须为转入或转出'}, status=400)
+        if amount <= 0:
+            return JsonResponse({'success': False, 'error': '金额必须大于0'}, status=400)
+
+        tx = Transaction.objects.create(
+            action=action,
+            asset_name='资金转入' if action == 'transfer' else '资金转出',
+            amount=amount,
+            date=date.fromisoformat(tx_date),
+            source='manual',
+            notes=notes or '用户确认推算',
+        )
+        return JsonResponse({'success': True, 'id': tx.id})
+    except (ValueError, KeyError) as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    except Exception as e:
+        logger.exception("api_cashflow_confirm failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)

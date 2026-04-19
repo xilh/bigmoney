@@ -61,6 +61,7 @@
                 {% endfor %}
             </datalist>
             <span class="text-xs text-muted">（AI 自动识别，可修改）</span>
+            <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:0.78rem;margin-left:8px;cursor:pointer;" title="勾选后，该平台下不在识别结果中的已有持仓将被自动清除并记录卖出交易"><input type="checkbox" id="autoRemoveMissing"> 清除消失持仓</label>
         </div>
         <div class="table-wrapper">
             <table id="resultsTable">
@@ -421,6 +422,7 @@ function confirmCurrent() {
             upload_id: currentUploadId,
             platform: document.getElementById('detectedPlatform').value,
             items: items,
+            auto_remove_missing: document.getElementById('autoRemoveMissing').checked,
         }),
     })
     .then(r => r.json())
@@ -432,6 +434,7 @@ function confirmCurrent() {
             const parts = [];
             if (data.updated) parts.push(`更新 ${data.updated} 项`);
             if (data.created) parts.push(`新增 ${data.created} 项`);
+            if (data.removed) parts.push(`清除 ${data.removed} 项`);
             addLog(`✅ 图片 ${currentFile.name} ${parts.join('，') || '无变更'}`, 'success');
             // Add confirmed items to existing set so next image knows about them
             items.forEach(item => {

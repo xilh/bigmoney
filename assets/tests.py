@@ -261,42 +261,53 @@ class RiskAlertsTest(TestCase):
 class ModifiedDietzTest(TestCase):
     """Test Modified Dietz performance calculation."""
 
-    def _create_snapshot(self, dt, total_value):
+    def _local_date(self, days_ago=0):
+        """Return a local date N days ago in the configured timezone."""
+        return timezone.localdate() - timedelta(days=days_ago)
+
+    def _make_aware_dt(self, local_date):
+        """Convert a local date to an aware datetime at noon (avoids edge cases)."""
+        import datetime as dt
+        tz = timezone.get_current_timezone()
+        return timezone.make_aware(
+            dt.datetime.combine(local_date, dt.time(12, 0)), tz,
+        )
+
+    def _create_snapshot(self, local_date, total_value):
         return Snapshot.objects.create(
-            date=dt, total_value=Decimal(str(total_value)),
+            date=self._make_aware_dt(local_date),
+            total_value=Decimal(str(total_value)),
         )
 
     def test_simple_return(self):
         """No cash flows, simple return."""
-        now = timezone.now()
-        start = now - timedelta(days=30)
-        end = now - timedelta(days=1)
+        start = self._local_date(30)
+        end = self._local_date(1)
 
         self._create_snapshot(start, 10000)
         self._create_snapshot(end, 11000)
 
         result = calculate_interval_performance(
-            start.date().isoformat(), end.date().isoformat(),
+            start.isoformat(), end.isoformat(),
         )
         self.assertAlmostEqual(result['return_rate_pct'], 10.0, places=1)
 
     def test_with_transfer(self):
         """Cash inflow should be factored out of return."""
-        now = timezone.now()
-        start = now - timedelta(days=30)
-        mid = now - timedelta(days=15)
-        end = now - timedelta(days=1)
+        start = self._local_date(30)
+        mid = self._local_date(15)
+        end = self._local_date(1)
 
         self._create_snapshot(start, 10000)
         self._create_snapshot(end, 16000)
 
         Transaction.objects.create(
             action='transfer', asset_name='转入',
-            amount=Decimal('5000'), date=mid.date(),
+            amount=Decimal('5000'), date=mid,
         )
 
         result = calculate_interval_performance(
-            start.date().isoformat(), end.date().isoformat(),
+            start.isoformat(), end.isoformat(),
         )
         # Profit = 16000 - 10000 - 5000 = 1000
         # Adjusted capital ~= 10000 + 5000*0.5 = 12500
@@ -309,23 +320,22 @@ class ModifiedDietzTest(TestCase):
 
     def test_same_snapshot_returns_empty(self):
         """Single snapshot should return empty result."""
-        now = timezone.now()
-        self._create_snapshot(now, 10000)
+        today = self._local_date(0)
+        self._create_snapshot(today, 10000)
         result = calculate_interval_performance(
-            now.date().isoformat(), now.date().isoformat(),
+            today.isoformat(), today.isoformat(),
         )
         self.assertEqual(result['return_rate_pct'], 0.0)
 
     def test_negative_return(self):
-        now = timezone.now()
-        start = now - timedelta(days=30)
-        end = now - timedelta(days=1)
+        start = self._local_date(30)
+        end = self._local_date(1)
 
         self._create_snapshot(start, 10000)
         self._create_snapshot(end, 8000)
 
         result = calculate_interval_performance(
-            start.date().isoformat(), end.date().isoformat(),
+            start.isoformat(), end.isoformat(),
         )
         self.assertAlmostEqual(result['return_rate_pct'], -20.0, places=1)
 

@@ -35,6 +35,10 @@
                     <span class="nav-icon">⚖️</span>
                     <span>再平衡</span>
                 </a>
+                <a href="{% url 'assets:cashflow' %}" class="nav-item {% if request.resolver_match.url_name == 'cashflow' %}active{% endif %}">
+                    <span class="nav-icon">💸</span>
+                    <span>资金流向</span>
+                </a>
                 <a href="{% url 'assets:history' %}" class="nav-item {% if request.resolver_match.url_name == 'history' %}active{% endif %}">
                     <span class="nav-icon">📈</span>
                     <span>历史记录</span>

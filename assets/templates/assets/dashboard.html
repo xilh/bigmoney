@@ -42,6 +42,17 @@
             {% endif %}
         </div>
     </div>
+    {% if month_net_flow %}
+    <div class="stat-card card-compact">
+        <div class="stat-label">本月净流入</div>
+        <div class="stat-value {% if month_net_flow > 0 %}text-success{% elif month_net_flow < 0 %}text-danger{% else %}text-muted{% endif %}">
+            {% if month_net_flow > 0 %}+{% endif %}¥{{ month_net_flow|floatformat:0 }}
+        </div>
+        <div class="stat-sub">
+            <a href="{% url 'assets:cashflow' %}" style="color:var(--color-primary)">查看资金流向 →</a>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 {% if risk_alerts or deviation_alerts %}

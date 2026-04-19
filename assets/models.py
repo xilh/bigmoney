@@ -135,6 +135,11 @@ class Transaction(models.Model):
         ('transfer', '转入'),
         ('withdraw', '转出'),
     ]
+    SOURCE_CHOICES = [
+        ('manual', '手动'),
+        ('auto', '自动生成'),
+        ('ocr', 'OCR识别'),
+    ]
     holding = models.ForeignKey(
         Holding, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='transactions', verbose_name='关联持仓'
@@ -145,6 +150,10 @@ class Transaction(models.Model):
     price = models.DecimalField('价格', max_digits=14, decimal_places=4, default=0)
     amount = models.DecimalField('金额(元)', max_digits=18, decimal_places=2, default=0)
     date = models.DateField('操作日期', default=timezone.now, db_index=True)
+    source = models.CharField('来源', max_length=20, default='manual', choices=SOURCE_CHOICES)
+    realized_pnl = models.DecimalField('已实现盈亏', max_digits=18, decimal_places=2,
+        null=True, blank=True, help_text='卖出时的已实现盈亏')
+    platform = models.CharField('平台', max_length=100, blank=True)
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -154,8 +163,7 @@ class Transaction(models.Model):
         verbose_name_plural = '交易记录'
 
     def clean(self):
-        from django.core.exceptions import ValidationError
-        if self.date and self.date > timezone.now().date():
+        if self.date and self.date > timezone.localdate():
             raise ValidationError({'date': '操作日期不能是未来日期'})
 
     def __str__(self):

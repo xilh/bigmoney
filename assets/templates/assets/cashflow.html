@@ -1,0 +1,286 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}资金流向{% endblock %}
+
+{% block content %}
+<div class="page-header flex-between" style="margin-bottom: 12px;">
+    <h2>资金流向</h2>
+    <button class="btn btn-primary btn-sm" onclick="document.getElementById('addModal').style.display='flex'">+ 手动记录</button>
+</div>
+
+<!-- Summary Stats -->
+<div class="stats-grid animate-in" style="margin-bottom: 12px;">
+    <div class="stat-card card-compact">
+        <div class="stat-label">当前总资产</div>
+        <div class="stat-value big-value">¥{{ summary.current_value|floatformat:0 }}</div>
+    </div>
+    <div class="stat-card card-compact">
+        <div class="stat-label">累计净投入</div>
+        <div class="stat-value">¥{{ summary.net_contribution|floatformat:0 }}</div>
+        <div class="stat-sub">转入 ¥{{ summary.total_transfers|floatformat:0 }} / 转出 ¥{{ summary.total_withdrawals|floatformat:0 }}</div>
+    </div>
+    <div class="stat-card card-compact">
+        <div class="stat-label">累计投资收益</div>
+        <div class="stat-value {% if summary.total_return >= 0 %}positive{% else %}negative{% endif %}">
+            {% if summary.total_return >= 0 %}+{% endif %}¥{{ summary.total_return|floatformat:0 }}
+        </div>
+        <div class="stat-sub">收益率 {% if summary.return_rate >= 0 %}+{% endif %}{{ summary.return_rate|floatformat:1 }}%</div>
+    </div>
+    <div class="stat-card card-compact">
+        <div class="stat-label">已实现盈亏</div>
+        <div class="stat-value {% if summary.total_realized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+            {% if summary.total_realized_pnl >= 0 %}+{% endif %}¥{{ summary.total_realized_pnl|floatformat:0 }}
+        </div>
+        <div class="stat-sub">来自卖出交易</div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 12px;" class="animate-in stagger-1">
+    <div class="card">
+        <div class="card-header" style="padding: 10px 16px;"><h3>月度资金活动</h3></div>
+        <div class="card-body" style="padding: 12px 16px;">
+            <div style="height: 220px;"><canvas id="monthlyChart"></canvas></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header" style="padding: 10px 16px;"><h3>交易类型分布</h3></div>
+        <div class="card-body" style="padding: 12px 16px;">
+            <div style="height: 220px;"><canvas id="actionChart"></canvas></div>
+        </div>
+    </div>
+</div>
+
+<!-- Initial Gap Alert -->
+{% if summary.initial_gap %}
+<div class="card animate-in stagger-2" style="margin-bottom: 8px; border-left: 3px solid var(--color-primary);">
+    <div class="card-body" style="padding: 12px 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+                <span class="text-xs text-muted">首张快照 {{ summary.initial_gap.date }}</span>
+                <div style="margin-top: 4px;">
+                    <span>首次记录时总资产 <strong class="font-mono">¥{{ summary.initial_gap.snapshot_value|floatformat:0 }}</strong>，</span>
+                    <span>已记录转入 <strong class="font-mono">¥{{ summary.initial_gap.recorded_transfers|floatformat:0 }}</strong>，</span>
+                    <span style="color: var(--color-primary);">推测初始投入约 <strong class="font-mono">¥{{ summary.initial_gap.gap|floatformat:0 }}</strong></span>
+                </div>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-sm btn-primary" onclick="confirmFlow('transfer', {{ summary.initial_gap.gap|floatformat:0 }}, '{{ summary.initial_gap.date }}')">确认初始投入</button>
+                <button class="btn btn-sm btn-secondary" onclick="editFlow('{{ summary.initial_gap.gap|floatformat:0 }}', '{{ summary.initial_gap.date }}', 'transfer')">调整金额</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Deduced Periods (unreconciled flows) -->
+{% if periods %}
+{% for p in periods %}
+{% if p.unreconciled > 500 or p.unreconciled < -500 %}
+<div class="card animate-in stagger-2" style="margin-bottom: 8px; border-left: 3px solid var(--color-warning);">
+    <div class="card-body" style="padding: 12px 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+                <span class="text-xs text-muted">{{ p.start_date }} → {{ p.end_date }}</span>
+                <div style="margin-top: 4px;">
+                    {% if p.unreconciled > 0 %}
+                    <span style="color: var(--color-warning);">推测有 <strong class="font-mono">¥{{ p.unreconciled|floatformat:0 }}</strong> 未记录的资金转入</span>
+                    <span class="text-xs text-muted">（买入 ¥{{ p.buys|floatformat:0 }}，已记录转入 ¥{{ p.transfers|floatformat:0 }}）</span>
+                    {% else %}
+                    <span style="color: var(--color-warning);">推测有 <strong class="font-mono">¥{{ p.unreconciled|floatformat:0 }}</strong> 未记录的资金转出</span>
+                    <span class="text-xs text-muted">（卖出 ¥{{ p.sells|floatformat:0 }}，已记录转出 ¥{{ p.withdrawals|floatformat:0 }}）</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="btn-group">
+                {% if p.unreconciled > 0 %}
+                <button class="btn btn-sm btn-primary" onclick="confirmFlow('transfer', {{ p.unreconciled|floatformat:0 }}, '{{ p.end_date }}')">确认转入</button>
+                {% else %}
+                <button class="btn btn-sm btn-primary" onclick="confirmFlow('withdraw', {{ p.unreconciled|floatformat:0|cut:'-' }}, '{{ p.end_date }}')">确认转出</button>
+                {% endif %}
+                <button class="btn btn-sm btn-secondary" onclick="editFlow('{{ p.unreconciled|floatformat:0|cut:'-' }}', '{{ p.end_date }}', '{% if p.unreconciled > 0 %}transfer{% else %}withdraw{% endif %}')">调整</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+<!-- Recent Transactions -->
+<div class="card animate-in stagger-3">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>交易记录</h3>
+        <span class="text-xs text-muted">自动记录的买卖与资金流动</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="table">
+            <thead><tr>
+                <th>日期</th><th>类型</th><th>资产</th><th>金额</th><th>来源</th><th>备注</th>
+            </tr></thead>
+            <tbody>
+            {% for tx in recent_transactions %}
+            <tr>
+                <td style="white-space:nowrap;">{{ tx.date }}</td>
+                <td>
+                    <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">
+                        {{ tx.action_display }}
+                    </span>
+                </td>
+                <td>{{ tx.asset_name }}{% if tx.platform %} <span class="text-xs text-muted">{{ tx.platform }}</span>{% endif %}</td>
+                <td class="font-mono" style="white-space:nowrap;">
+                    ¥{{ tx.amount|floatformat:0 }}
+                    {% if tx.realized_pnl %}
+                    <span class="text-xs {% if tx.realized_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">
+                        ({% if tx.realized_pnl >= 0 %}+{% endif %}{{ tx.realized_pnl|floatformat:0 }})
+                    </span>
+                    {% endif %}
+                </td>
+                <td><span class="badge badge-neutral" style="font-size:0.65rem;">{{ tx.source_display }}</span></td>
+                <td class="text-xs text-muted">{{ tx.notes|truncatechars:30 }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="text-center text-muted" style="padding: 32px;">暂无交易记录。上传截图识别持仓后将自动生成买卖记录。</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Manual Entry Modal -->
+<div class="modal-overlay" id="addModal" style="display:none;">
+    <div class="modal" style="max-width: 420px;">
+        <div class="modal-header">
+            <h3 id="modalTitle">记录资金流动</h3>
+            <button class="btn btn-sm" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>类型</label>
+                <div class="btn-group" style="width: 100%;">
+                    <button class="btn btn-sm btn-success active" id="btnTransfer" onclick="setAction('transfer')" style="flex:1">转入（注资）</button>
+                    <button class="btn btn-sm btn-secondary" id="btnWithdraw" onclick="setAction('withdraw')" style="flex:1">转出（取款）</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>金额</label>
+                <input type="number" id="flowAmount" class="form-control" step="0.01" min="0" placeholder="¥">
+            </div>
+            <div class="form-group">
+                <label>日期</label>
+                <input type="date" id="flowDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>备注（可选）</label>
+                <input type="text" id="flowNotes" class="form-control" placeholder="如：工资定投、赎回应急">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveFlow()">确认</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value
+    || '{{ csrf_token }}';
+let currentAction = 'transfer';
+
+function setAction(action) {
+    currentAction = action;
+    document.getElementById('btnTransfer').className = 'btn btn-sm ' + (action === 'transfer' ? 'btn-success active' : 'btn-secondary');
+    document.getElementById('btnWithdraw').className = 'btn btn-sm ' + (action === 'withdraw' ? 'btn-danger active' : 'btn-secondary');
+}
+
+function closeModal() {
+    document.getElementById('addModal').style.display = 'none';
+    document.getElementById('flowAmount').value = '';
+    document.getElementById('flowNotes').value = '';
+    document.getElementById('modalTitle').textContent = '记录资金流动';
+}
+
+function confirmFlow(action, amount, flowDate) {
+    if (!confirm(`确认记录${action === 'transfer' ? '转入' : '转出'} ¥${Math.abs(amount).toLocaleString()}？`)) return;
+    submitFlow(action, Math.abs(amount), flowDate, '用户确认推算');
+}
+
+function editFlow(amount, flowDate, action) {
+    setAction(action);
+    document.getElementById('flowAmount').value = Math.abs(amount);
+    document.getElementById('flowDate').value = flowDate;
+    document.getElementById('modalTitle').textContent = '调整推算金额';
+    document.getElementById('addModal').style.display = 'flex';
+}
+
+async function saveFlow() {
+    const amount = document.getElementById('flowAmount').value;
+    const flowDate = document.getElementById('flowDate').value;
+    const notes = document.getElementById('flowNotes').value;
+    if (!amount || parseFloat(amount) <= 0) { alert('请输入金额'); return; }
+    await submitFlow(currentAction, parseFloat(amount), flowDate, notes);
+}
+
+async function submitFlow(action, amount, flowDate, notes) {
+    const resp = await fetch('{% url "assets:api_cashflow_confirm" %}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+        body: JSON.stringify({action, amount, date: flowDate, notes}),
+    });
+    const data = await resp.json();
+    if (data.success) { location.reload(); }
+    else { alert(data.error || '操作失败'); }
+}
+
+// Init date
+document.getElementById('flowDate').value = new Date().toISOString().slice(0, 10);
+
+// Monthly Chart
+const monthlyData = JSON.parse('{{ monthly_json|escapejs }}');
+if (monthlyData.length) {
+    new Chart(document.getElementById('monthlyChart'), {
+        type: 'bar',
+        data: {
+            labels: monthlyData.map(d => d.month),
+            datasets: [
+                {label: '转入', data: monthlyData.map(d => d.transfer), backgroundColor: 'rgba(34, 197, 94, 0.7)'},
+                {label: '买入', data: monthlyData.map(d => d.buy), backgroundColor: 'rgba(59, 130, 246, 0.5)'},
+                {label: '卖出', data: monthlyData.map(d => -d.sell), backgroundColor: 'rgba(239, 68, 68, 0.5)'},
+                {label: '转出', data: monthlyData.map(d => -d.withdraw), backgroundColor: 'rgba(249, 115, 22, 0.7)'},
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {legend: {labels: {color: '#ccc'}}, datalabels: {display: false}},
+            scales: {
+                x: {stacked: true, ticks: {color: '#999'}, grid: {display: false}},
+                y: {stacked: true, ticks: {color: '#999'}, grid: {color: 'rgba(255,255,255,0.05)'}},
+            },
+        },
+    });
+}
+
+// Action Chart
+const actionData = JSON.parse('{{ action_json|escapejs }}');
+if (actionData.length) {
+    const colors = ['#22c55e','#ef4444','#3b82f6','#f97316','#8b5cf6','#eab308'];
+    new Chart(document.getElementById('actionChart'), {
+        type: 'doughnut',
+        data: {
+            labels: actionData.map(d => d.label),
+            datasets: [{data: actionData.map(d => d.total), backgroundColor: colors}],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: {position: 'right', labels: {color: '#ccc', font: {size: 11}}},
+                datalabels: {display: false},
+            },
+        },
+    });
+}
+</script>
+{% endblock %}
