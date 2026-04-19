@@ -5,7 +5,6 @@
 {% block content %}
 <div class="page-header flex-between" style="margin-bottom: 12px;">
     <h2>资金流向</h2>
-    <button class="btn btn-primary btn-sm" onclick="document.getElementById('addModal').style.display='flex'">+ 手动记录</button>
 </div>
 
 <!-- Summary Stats -->
@@ -148,7 +147,7 @@
 </div>
 
 <!-- Manual Entry Modal -->
-<div class="modal-overlay" id="addModal" style="display:none;">
+<div class="modal-overlay" id="addModal">
     <div class="modal" style="max-width: 420px;">
         <div class="modal-header">
             <h3 id="modalTitle">记录资金流动</h3>
@@ -197,7 +196,7 @@ function setAction(action) {
 }
 
 function closeModal() {
-    document.getElementById('addModal').style.display = 'none';
+    document.getElementById('addModal').classList.remove('active');
     document.getElementById('flowAmount').value = '';
     document.getElementById('flowNotes').value = '';
     document.getElementById('modalTitle').textContent = '记录资金流动';
@@ -213,7 +212,7 @@ function editFlow(amount, flowDate, action) {
     document.getElementById('flowAmount').value = Math.abs(amount);
     document.getElementById('flowDate').value = flowDate;
     document.getElementById('modalTitle').textContent = '调整推算金额';
-    document.getElementById('addModal').style.display = 'flex';
+    document.getElementById('addModal').classList.add('active');
 }
 
 async function saveFlow() {
