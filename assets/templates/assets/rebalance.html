@@ -66,47 +66,50 @@
 </div>
 
 <!-- Layer Detail -->
-<div class="card mb-3 animate-in stagger-3">
-    <div class="card-header">
-        <h3>📐 各层级详情</h3>
+<div class="accordion-item animate-in stagger-3" style="border: 1px solid var(--color-border); margin-bottom: 24px; border-radius: var(--border-radius); background: var(--color-surface);">
+    <div class="accordion-header" onclick="toggleAccordion(this)" style="padding: 16px;">
+        <h3 style="margin: 0;">📐 各层级详情与市值偏差表</h3>
+        <span class="accordion-arrow">▾</span>
     </div>
-    <div class="card-body">
-        <table>
-            <thead>
-                <tr>
-                    <th>层级</th>
-                    <th class="text-right">目标比例</th>
-                    <th class="text-right">实际比例</th>
-                    <th class="text-right">偏差</th>
-                    <th class="text-right">目标市值</th>
-                    <th class="text-right">实际市值</th>
-                    <th class="text-right">调整金额</th>
-                    <th>状态</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for layer in rebalance.layers %}
-                <tr>
-                    <td><strong>{{ layer.name }}</strong></td>
-                    <td class="text-right font-mono">{{ layer.target_ratio }}%</td>
-                    <td class="text-right font-mono">{{ layer.actual_ratio }}%</td>
-                    <td class="text-right font-mono {% if layer.deviation > 5 or layer.deviation < -5 %}text-danger{% elif layer.deviation > 3 or layer.deviation < -3 %}text-warning{% endif %}">
-                        {% if layer.deviation >= 0 %}+{% endif %}{{ layer.deviation }}%
-                    </td>
-                    <td class="text-right font-mono">¥{{ layer.target_value|floatformat:0 }}</td>
-                    <td class="text-right font-mono">¥{{ layer.actual_value|floatformat:0 }}</td>
-                    <td class="text-right font-mono {% if layer.adjustment > 0 %}text-danger{% elif layer.adjustment < 0 %}text-success{% endif %}">
-                        {% if layer.adjustment > 0 %}卖出 ¥{{ layer.adjustment|floatformat:0 }}{% elif layer.adjustment < 0 %}买入 ¥{{ layer.adjustment|floatformat:0|cut:"-" }}{% else %}—{% endif %}
-                    </td>
-                    <td>
-                        <span class="badge {% if layer.status == 'critical' %}badge-danger{% elif layer.status == 'warning' %}badge-warning{% else %}badge-success{% endif %}">
-                            {% if layer.status == 'critical' %}需调整{% elif layer.status == 'warning' %}关注{% else %}正常{% endif %}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="accordion-body">
+        <div class="accordion-content" style="padding: 0 16px 16px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>层级</th>
+                        <th class="text-right">目标比例</th>
+                        <th class="text-right">实际比例</th>
+                        <th class="text-right">偏差</th>
+                        <th class="text-right">目标市值</th>
+                        <th class="text-right">实际市值</th>
+                        <th class="text-right">调整金额</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for layer in rebalance.layers %}
+                    <tr>
+                        <td><strong>{{ layer.name }}</strong></td>
+                        <td class="text-right font-mono">{{ layer.target_ratio }}%</td>
+                        <td class="text-right font-mono">{{ layer.actual_ratio }}%</td>
+                        <td class="text-right font-mono {% if layer.deviation > 5 or layer.deviation < -5 %}text-danger{% elif layer.deviation > 3 or layer.deviation < -3 %}text-warning{% endif %}">
+                            {% if layer.deviation >= 0 %}+{% endif %}{{ layer.deviation }}%
+                        </td>
+                        <td class="text-right font-mono">¥{{ layer.target_value|floatformat:0 }}</td>
+                        <td class="text-right font-mono">¥{{ layer.actual_value|floatformat:0 }}</td>
+                        <td class="text-right font-mono {% if layer.adjustment > 0 %}text-danger{% elif layer.adjustment < 0 %}text-success{% endif %}">
+                            {% if layer.adjustment > 0 %}卖出 ¥{{ layer.adjustment|floatformat:0 }}{% elif layer.adjustment < 0 %}买入 ¥{{ layer.adjustment|floatformat:0|cut:"-" }}{% else %}—{% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {% if layer.status == 'critical' %}badge-danger{% elif layer.status == 'warning' %}badge-warning{% else %}badge-success{% endif %}">
+                                {% if layer.status == 'critical' %}需调整{% elif layer.status == 'warning' %}关注{% else %}正常{% endif %}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -138,6 +141,15 @@
                     <div class="text-xs text-muted">偏差 {{ item.deviation }}%</div>
                 </div>
             </div>
+            {% if item.direction == 'buy' %}
+            <div style="margin-bottom: 12px;">
+                <button class="btn btn-sm btn-primary" onclick="recommendAssets(this, '{{ item.layer }}', {{ item.total_amount }})" style="display:flex; align-items:center; gap:4px;">
+                    🤖 AI 寻宝指引
+                </button>
+            </div>
+            <div class="ai-recommendation-container" style="display:none; margin-bottom: 12px; background: rgba(var(--color-primary-rgb), 0.05); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); padding: 12px;">
+            </div>
+            {% endif %}
             <table class="table" style="margin: 0;">
                 <thead><tr>
                     <th>资产</th>
@@ -176,29 +188,32 @@
 {% endif %}
 
 <!-- Drawdown Protocol -->
-<div class="card animate-in">
-    <div class="card-header">
-        <h3>🛡️ 下跌应对协议</h3>
+<div class="accordion-item animate-in" style="border: 1px solid var(--color-border); border-radius: var(--border-radius); background: var(--color-surface); margin-bottom: 40px;">
+    <div class="accordion-header" onclick="toggleAccordion(this)" style="padding: 16px;">
+        <h3 style="margin: 0;">🛡️ 下跌应对协议 (市场操作指南)</h3>
+        <span class="accordion-arrow">▾</span>
     </div>
-    <div class="card-body">
-        {% for key, protocol in drawdown_protocols.items %}
-        <div class="accordion-item" style="border: 1px solid var(--color-border); margin-bottom: 8px;">
-            <div class="accordion-header" onclick="toggleAccordion(this)" style="padding: 12px 16px;">
-                <strong>{{ protocol.name }}</strong>
-                <span class="accordion-arrow">▾</span>
-            </div>
-            <div class="accordion-body">
-                <div class="accordion-content" style="padding: 12px 16px 16px;">
-                    {% for rule in protocol.rules %}
-                    <div style="padding: 10px 0; border-bottom: 1px solid var(--color-border);">
-                        <div class="badge badge-warning mb-1">{{ rule.threshold }}</div>
-                        <div class="text-sm" style="margin-top: 6px;">{{ rule.action }}</div>
+    <div class="accordion-body">
+        <div class="accordion-content" style="padding: 0 16px 16px;">
+            {% for key, protocol in drawdown_protocols.items %}
+            <div class="accordion-item" style="border: 1px solid var(--color-border); margin-bottom: 8px; border-radius: var(--border-radius-sm);">
+                <div class="accordion-header" onclick="toggleAccordion(this)" style="padding: 12px 16px;">
+                    <strong>{{ protocol.name }}</strong>
+                    <span class="accordion-arrow">▾</span>
+                </div>
+                <div class="accordion-body">
+                    <div class="accordion-content" style="padding: 12px 16px 16px;">
+                        {% for rule in protocol.rules %}
+                        <div style="padding: 10px 0; border-bottom: 1px solid var(--color-border);">
+                            <div class="badge badge-warning mb-1">{{ rule.threshold }}</div>
+                            <div class="text-sm" style="margin-top: 6px;">{{ rule.action }}</div>
+                        </div>
+                        {% endfor %}
                     </div>
-                    {% endfor %}
                 </div>
             </div>
+            {% endfor %}
         </div>
-        {% endfor %}
     </div>
 </div>
 
@@ -259,5 +274,67 @@ function toggleAccordion(header) {
     header.parentElement.classList.toggle('open');
 }
 
+function recommendAssets(btn, layerName, buyAmount) {
+    const container = btn.parentElement.nextElementSibling;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;border:2px solid var(--color-primary);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;"></span> AI 思考中...';
+    container.style.display = 'block';
+    container.innerHTML = '<div style="color:var(--color-text-muted); font-size: 0.85rem;">正在基于您的配置策略和 5% 红线寻找优质标的...</div>';
+    
+    fetch('{% url "assets:api_advisor_recommend_assets" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({ layer_name: layerName, buy_amount: buyAmount })
+    })
+    .then(r => r.json())
+    .then(res => {
+        btn.disabled = false;
+        btn.innerHTML = '🤖 重新寻宝';
+        
+        if (res.success && res.data) {
+            let html = '<h4 style="margin:0 0 12px 0; font-size:0.95rem; color:var(--color-text); display:flex; align-items:center; gap:6px;">✨ AI 护航选股 <span class="badge badge-success" style="font-size: 0.65rem;">避险策略</span></h4>';
+            if (res.data.recommendations && res.data.recommendations.length > 0) {
+                html += '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom: 12px;">';
+                res.data.recommendations.forEach(r => {
+                    const riskCls = r.risk_level === 'low' ? 'text-success' : (r.risk_level === 'medium' ? 'text-warning' : 'text-danger');
+                    html += `
+                        <div style="background:var(--color-background); border:1px solid var(--color-border); border-radius:var(--border-radius-sm); padding:10px;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+                                <div>
+                                    <strong style="color:var(--color-text);">${r.name}</strong>
+                                    ${r.code ? `<span style="font-size:0.8rem; color:var(--color-text-muted); font-family:monospace; margin-left:4px;">${r.code}</span>` : ''}
+                                </div>
+                                <div style="display:flex; gap:4px; align-items:center;">
+                                    <span class="badge badge-neutral" style="font-size:0.7rem;">${r.type}</span>
+                                    <span class="${riskCls}" style="font-size:0.7rem; font-weight:600;">[${r.risk_level}]</span>
+                                </div>
+                            </div>
+                            <div style="font-size:0.85rem; color:var(--color-text-secondary); line-height:1.5;">${r.rationale}</div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+            if (res.data.advice) {
+                html += `<div style="font-size: 0.85rem; color:var(--color-primary); background:rgba(var(--color-primary-rgb), 0.1); padding: 10px; border-radius: var(--border-radius-sm); border-left: 3px solid var(--color-primary);"><strong>策略指引:</strong> ${res.data.advice}</div>`;
+            }
+            container.innerHTML = html;
+        } else {
+            container.innerHTML = `<div class="text-danger" style="font-size: 0.85rem; background:rgba(239,68,68,0.1); padding:10px; border-radius:var(--border-radius-sm);">❌ ${res.error || '获取建议失败，请检查 LLM 配置是否有效'}</div>`;
+        }
+    })
+    .catch(e => {
+        btn.disabled = false;
+        btn.innerHTML = '🤖 重新寻宝';
+        container.innerHTML = `<div class="text-danger" style="font-size: 0.85rem; background:rgba(239,68,68,0.1); padding:10px; border-radius:var(--border-radius-sm);">❌ 网络或服务端错误：${e.message}</div>`;
+    });
+}
 </script>
+<style>
+@keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
 {% endblock %}

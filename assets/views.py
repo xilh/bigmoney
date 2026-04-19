@@ -1157,6 +1157,32 @@ def api_advisor_evaluate(request):
 
 
 @require_POST
+def api_advisor_recommend_assets(request):
+    """调用 AI 为特定层级推荐可以买入的资产"""
+    try:
+        data = json.loads(request.body)
+        layer_name = data.get('layer_name')
+        buy_amount = float(data.get('buy_amount', 0))
+        
+        if not layer_name or buy_amount <= 0:
+            return JsonResponse({'success': False, 'error': '无效的层级名称或买入金额'}, status=400)
+            
+        layer = AssetLayer.objects.filter(name=layer_name).first()
+        if not layer:
+            return JsonResponse({'success': False, 'error': '层级不存在'}, status=400)
+            
+        current_holdings = list(Holding.objects.filter(layer=layer).values('name', 'market_value'))
+        
+        from .services.advisor import search_and_recommend_assets
+        result = search_and_recommend_assets(layer_name, buy_amount, current_holdings)
+        
+        return JsonResponse(result)
+    except Exception as e:
+        logger.exception("api_advisor_recommend_assets failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@require_POST
 def api_asset_evaluate(request):
     """调用 AI 对单个资产进行深度评估"""
     try:

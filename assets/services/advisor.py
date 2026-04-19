@@ -119,6 +119,42 @@ ASSET_EVAL_PROMPT = """你是一位专业的个人投资顾问（CFA 持证）�
 """
 
 
+ASSET_SEARCH_PROMPT = """你是一位专业的个人投资顾问（CFA 持证），正在为客户寻找优质的投资标的以进行再平衡配置。
+客户目前需要向特定的投资层级分配资金。请根据该层级的投资属性，推荐 2-3 个具体且优质的资产（如 ETF、公募基金、股票或特定债券等）。
+
+## 投资原则（必须遵守）
+客户采用五层资产配置体系（安全垫/债券核心/股票核心/另类对冲/卫星机会），每层有目标配比。
+- 绝不推荐带有高杠杆、P2P 或无牌照的高风险资产。
+- **5% 单票上限机制**：推荐单只股票时，说明仓位不应超过总资产的 5%。
+- 推荐须契合该层级的定位：
+  - 第一层（安全垫/干火药）：以货币基金、短债基金为主，要求极度安全、高流动性。
+  - 第二层（债券核心）：以纯债基金、利率债或高等级信用债为主，提供稳定生息。
+  - 第三层（股票核心）：以宽基指数ETF（如沪深300、标普500、纳指100）或长期绩优的红利底仓为主。
+  - 第四层（另类/对冲）：如黄金ETF、资源类、或者与其他底层相关性低的资产。
+  - 第五层（卫星机会）：高赔率、高弹性的行业主题、个股等，或成长性板块。
+
+## 你获得的信息
+- **目标层级名称**：客户希望补仓的层级。
+- **配置金额**：计划投入的金额。
+- **当前该层持仓**：客户目前在该层已持有的资产。为了分散风险，你应该优先推荐未被持有的优质资产。
+
+## 输出格式
+请返回纯 JSON（不要 markdown 代码块），格式如下：
+{
+  "recommendations": [
+    {
+      "name": "资产名称 (如 沪深300ETF)",
+      "code": "代码 (如 510300.SH)",
+      "type": "资产属类 (如 ETF/股票)",
+      "rationale": "推荐理由，结合层级属性和投资逻辑 (约 2-3 句话)",
+      "risk_level": "low|medium|high|critical"
+    }
+  ],
+  "advice": "针对此层补仓配置的整体投资建议 (约 50-100 字)"
+}
+"""
+
+
 def _build_asset_context(asset_info, transactions, value_history,
                          layers_data=None, holdings_data=None, total_value=0):
     """将单个资产的数据格式化为 LLM 可理解的文本上下文，含完整组合信息"""
@@ -194,6 +230,36 @@ def evaluate_asset(asset_info, transactions, value_history,
             return _call_openai_compatible(user_message, config, system_prompt=ASSET_EVAL_PROMPT)
     except Exception as e:
         logger.exception("evaluate_asset failed")
+        return {'success': False, 'data': None, 'error': str(e)}
+
+
+def search_and_recommend_assets(layer_name, buy_amount, current_holdings):
+    """
+    调用大模型为指定层级推荐资产。
+    
+    Args:
+        layer_name: 目标层级名称
+        buy_amount: 计划买入金额
+        current_holdings: list of dict, 当前该层已持有资产信息
+        
+    Returns:
+        dict: {success: bool, data: {...}, error: str}
+    """
+    config = _get_advisor_config()
+    
+    holdings_text = "该层暂无持仓"
+    if current_holdings:
+        holdings_text = ", ".join(f"{h.get('name')} (市值: ¥{float(h.get('market_value', 0)):,.0f})" for h in current_holdings)
+        
+    user_message = f"目标层级: {layer_name}\n计划买入金额: ¥{float(buy_amount):,.0f}\n当前该层已持有资产: {holdings_text}\n\n请推荐 2-3 个符合该层级属性的优质资产组合标的。"
+    
+    try:
+        if config['provider'] == 'anthropic':
+            return _call_anthropic(user_message, config, system_prompt=ASSET_SEARCH_PROMPT)
+        else:
+            return _call_openai_compatible(user_message, config, system_prompt=ASSET_SEARCH_PROMPT)
+    except Exception as e:
+        logger.exception("search_and_recommend_assets failed")
         return {'success': False, 'data': None, 'error': str(e)}
 
 
