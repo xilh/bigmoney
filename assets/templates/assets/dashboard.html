@@ -58,26 +58,30 @@
 {% if risk_alerts or deviation_alerts %}
 <div class="animate-in stagger-1" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
     {% for alert in risk_alerts %}
-    <div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% elif alert.level == 'info' %}alert-info{% else %}alert-warning{% endif %} p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
+    <div class="alert {% if alert.level == 'critical' %}alert-danger{% elif alert.level == 'success' %}alert-success{% elif alert.level == 'info' %}alert-info{% else %}alert-warning{% endif %} p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;" id="alert-{{ alert.holding_id }}-{{ alert.alert_type }}">
         <div style="display: flex; align-items: center; gap: 8px;">
             <span style="font-size: 1.2rem;">{% if alert.level == 'critical' %}🚨{% elif alert.level == 'success' %}🎉{% elif alert.level == 'info' %}💡{% else %}⚠️{% endif %}</span>
             <div>
                 <strong>{{ alert.source }}:</strong> {{ alert.message }}
             </div>
         </div>
-        <div class="text-sm">建议：{{ alert.action }}</div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="text-sm">建议：{{ alert.action }}</div>
+            <button class="btn btn-sm btn-secondary" style="padding: 1px 8px; font-size: 0.7rem; white-space: nowrap;" onclick="dismissAlert({{ alert.holding_id }}, '{{ alert.alert_type }}')">忽略 7 天</button>
+        </div>
     </div>
     {% endfor %}
     {% for ld in deviation_alerts %}
-    <div class="alert alert-danger p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;">
+    <div class="alert alert-danger p-2" style="display: flex; justify-content: space-between; align-items: center; margin: 0;" id="alert-dev-{{ forloop.counter }}">
         <div style="display: flex; align-items: center; gap: 8px;">
             <span style="font-size: 1.2rem;">⚠️</span>
             <div>
                 <strong>{{ ld.name }}配置严重偏差:</strong> 实际 {{ ld.actual_ratio }}% vs 目标 {{ ld.target_ratio }}%
             </div>
         </div>
-        <div class="text-sm">
-            <a href="{% url 'assets:rebalance' %}" style="color: inherit; text-decoration: underline;">去调优 →</a>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <a href="{% url 'assets:rebalance' %}" class="text-sm" style="color: inherit; text-decoration: underline; white-space: nowrap;">去调优 →</a>
+            <button class="btn btn-sm btn-secondary" style="padding: 1px 8px; font-size: 0.7rem; white-space: nowrap;" onclick="dismissDeviation('{{ ld.name }}', this)">忽略 7 天</button>
         </div>
     </div>
     {% endfor %}
@@ -211,6 +215,33 @@
 </div>
 
 <script>
+const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '{{ csrf_token }}';
+
+async function dismissAlert(holdingId, alertType) {
+    const resp = await fetch('{% url "assets:api_alert_dismiss" %}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+        body: JSON.stringify({holding_id: holdingId, alert_type: alertType}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+        const el = document.getElementById(`alert-${holdingId}-${alertType}`);
+        if (el) el.style.display = 'none';
+    }
+}
+
+async function dismissDeviation(layerName, btn) {
+    const resp = await fetch('{% url "assets:api_alert_dismiss" %}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+        body: JSON.stringify({layer_name: layerName}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+        btn.closest('.alert').style.display = 'none';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     Chart.register(ChartDataLabels);
 

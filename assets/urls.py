@@ -47,4 +47,5 @@ urlpatterns = [
     path('api/advisor/evaluate/', _protected(views.api_advisor_evaluate), name='api_advisor_evaluate'),
     path('api/test-llm/', _protected(views.api_test_llm), name='api_test_llm'),
     path('api/cashflow/confirm/', _protected(views.api_cashflow_confirm), name='api_cashflow_confirm'),
+    path('api/alert/dismiss/', _protected(views.api_alert_dismiss), name='api_alert_dismiss'),
 ]

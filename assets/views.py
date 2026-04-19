@@ -36,6 +36,17 @@ class DecimalEncoder(json.JSONEncoder):
             return float(obj)
         return super().default(obj)
 
+def _get_dismissed_deviations(cutoff):
+    """获取 cutoff 之后被忽略的层级偏差名称集合"""
+    raw = Setting.get('dismissed_deviation_alerts', '{}')
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return set()
+    cutoff_iso = cutoff.isoformat()
+    return {name for name, ts in data.items() if ts >= cutoff_iso}
+
+
 def _get_layers_summary():
     """获取各层级汇总数据"""
     layers = AssetLayer.objects.all()
@@ -89,12 +100,27 @@ def dashboard(request):
     total_profit_pct = float(total_profit / total_cost * 100) if total_cost > 0 else 0
 
     from .services.rebalance import calculate_risk_alerts
+    from .models import AlertAction
 
-    # 偏差警告
-    deviation_alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
+    # 7 天内已处置的预警 key（holding_id:alert_type）
+    dismiss_cutoff = timezone.now() - timezone.timedelta(days=7)
+    acked_keys = set(
+        AlertAction.objects.filter(created_at__gte=dismiss_cutoff)
+        .values_list('holding_id', 'alert_type')
+    )
+    acked_keys = {f"{hid}:{atype}" for hid, atype in acked_keys}
 
-    # 风险预警
-    risk_alerts = calculate_risk_alerts(holdings, total_value)
+    # 层级偏差 7 天内已忽略的
+    dismissed_deviations = _get_dismissed_deviations(dismiss_cutoff)
+
+    # 偏差警告（过滤已忽略的）
+    deviation_alerts = [
+        ld for ld in layers_data
+        if abs(ld['deviation']) > 5 and ld['name'] not in dismissed_deviations
+    ]
+
+    # 风险预警（过滤已处置的）
+    risk_alerts = calculate_risk_alerts(holdings, total_value, acknowledged_keys=acked_keys)
 
     # 平台分布
     platform_distribution = list(Holding.objects.values('platform')
@@ -1263,3 +1289,38 @@ def api_cashflow_confirm(request):
     except Exception as e:
         logger.exception("api_cashflow_confirm failed")
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@require_POST
+def api_alert_dismiss(request):
+    """忽略预警（7天内不再显示）"""
+    from .models import AlertAction
+    try:
+        data = json.loads(request.body)
+        alert_type = data.get('alert_type', '')
+        holding_id = data.get('holding_id')
+        layer_name = data.get('layer_name')  # for deviation alerts
+
+        if layer_name:
+            # 层级偏差预警 → 存入 Setting
+            raw = Setting.get('dismissed_deviation_alerts', '{}')
+            try:
+                dismissed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                dismissed = {}
+            dismissed[layer_name] = timezone.now().isoformat()
+            Setting.set('dismissed_deviation_alerts', json.dumps(dismissed, ensure_ascii=False))
+            return JsonResponse({'success': True})
+
+        if holding_id and alert_type:
+            # 持仓级风险预警 → AlertAction 记录
+            AlertAction.objects.create(
+                holding_id=holding_id,
+                alert_type=alert_type,
+                action='dismissed',
+            )
+            return JsonResponse({'success': True})
+
+        return JsonResponse({'success': False, 'error': '缺少参数'}, status=400)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
