@@ -1461,7 +1461,7 @@ def _render_asset_detail(request, holding, asset_name):
         for h in (rpt['holdings_data'] or []):
             if h.get('name') == asset_name:
                 evaluations.append({
-                    'date': rpt['date'].strftime('%Y-%m-%d %H:%M'),
+                    'date': timezone.localtime(rpt['date']).strftime('%Y-%m-%d %H:%M'),
                     'signal': h.get('signal', ''),
                     'signal_reason': h.get('signal_reason', ''),
                     'risk_level': h.get('risk_level', ''),
@@ -1505,8 +1505,6 @@ def _render_asset_detail(request, holding, asset_name):
         .values('id', 'date', 'score', 'signal', 'signal_reason',
                 'risk_level', 'analysis_data', 'action_plan', 'risks', 'highlights')
     )
-    for ae in asset_evals:
-        ae['date_display'] = ae['date'].strftime('%Y-%m-%d %H:%M')
     latest_asset_eval_json = None
     if asset_evals:
         latest = asset_evals[0]
@@ -1522,6 +1520,42 @@ def _render_asset_detail(request, holding, asset_name):
             'date': latest['date'].isoformat(),
         }, ensure_ascii=False)
 
+    # 6. 合并所有评估记录为统一时间线
+    all_evaluations = []
+    for ev in evaluations:
+        all_evaluations.append({
+            'date': ev['date'],  # already formatted
+            'date_sort': ev['date'],
+            'source': 'portfolio',
+            'signal': ev['signal'],
+            'signal_reason': ev['signal_reason'],
+            'risk_level': ev['risk_level'],
+            'comment': ev['comment'],
+        })
+    for ae in asset_evals:
+        local_date = timezone.localtime(ae['date'])
+        all_evaluations.append({
+            'date': local_date.strftime('%Y-%m-%d %H:%M'),
+            'date_sort': local_date.strftime('%Y-%m-%d %H:%M'),
+            'source': 'deep',
+            'signal': ae['signal'],
+            'signal_reason': ae['signal_reason'],
+            'risk_level': ae['risk_level'],
+            'score': ae['score'],
+            'action_plan': ae['action_plan'],
+            'analysis_json': json.dumps({
+                'score': ae['score'],
+                'signal': ae['signal'],
+                'signal_reason': ae['signal_reason'],
+                'risk_level': ae['risk_level'],
+                'analysis': ae['analysis_data'],
+                'action_plan': ae['action_plan'],
+                'risks': ae['risks'],
+                'highlights': ae['highlights'],
+            }, ensure_ascii=False),
+        })
+    all_evaluations.sort(key=lambda x: x['date_sort'], reverse=True)
+
     # 检查 AI 顾问配置
     provider = Setting.get('advisor_llm_provider', 'openai_compatible')
     advisor_key = Setting.get('advisor_api_key', '')
@@ -1531,14 +1565,16 @@ def _render_asset_detail(request, holding, asset_name):
     else:
         has_api_config = bool(advisor_url)
 
+    has_any_deep_eval = bool(asset_evals)
+
     context = {
         'asset_name': asset_name,
         'holding': holding_data,
         'is_active': is_active,
         'transactions': transactions,
         'value_history_json': json.dumps(value_history, ensure_ascii=False),
-        'evaluations': evaluations,
-        'asset_evals': asset_evals,
+        'all_evaluations': all_evaluations,
+        'has_any_deep_eval': has_any_deep_eval,
         'latest_asset_eval_json': latest_asset_eval_json,
         'total_bought': total_bought,
         'total_sold': total_sold,
