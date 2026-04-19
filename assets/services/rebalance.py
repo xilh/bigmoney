@@ -277,6 +277,141 @@ def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list
     return alerts
 
 
+def generate_investment_plan(layers_data, holdings, total_value, rebalance_result):
+    """
+    基于再平衡分析结果，生成具体的投资执行计划。
+
+    Returns:
+        list of plan items, each with: priority, timeline, layer, actions (list), total_amount, reason
+    """
+    if total_value <= 0:
+        return []
+
+    plan = []
+    layer_map = {ld['name']: ld for ld in layers_data}
+
+    # 按层级分组持仓
+    holdings_by_layer = {}
+    for h in holdings:
+        layer_name = h.layer.name
+        holdings_by_layer.setdefault(layer_name, []).append(h)
+
+    for layer_result in rebalance_result.get('layers', []):
+        adjustment = layer_result['adjustment']
+        if abs(adjustment) < 100:
+            continue
+
+        layer_name = layer_result['name']
+        layer_holdings = holdings_by_layer.get(layer_name, [])
+        deviation = abs(layer_result['deviation'])
+
+        # 确定优先级和时间线
+        if layer_result['status'] == 'critical':
+            priority = 1
+            timeline = '本周内'
+            urgency = 'urgent'
+        elif layer_result['status'] == 'warning':
+            priority = 2
+            timeline = '本月内'
+            urgency = 'normal'
+        else:
+            priority = 3
+            timeline = '下次季度检视'
+            urgency = 'low'
+
+        actions = []
+
+        if adjustment > 0:
+            # 需要卖出 — 从该层最大持仓开始
+            remaining = adjustment
+            sorted_holdings = sorted(layer_holdings, key=lambda h: float(h.market_value or 0), reverse=True)
+            for h in sorted_holdings:
+                if remaining <= 0:
+                    break
+                mv = float(h.market_value or 0)
+                if mv <= 0:
+                    continue
+                sell_amount = min(remaining, mv)
+                sell_pct = sell_amount / mv * 100
+                actions.append({
+                    'type': 'sell',
+                    'asset_name': h.name,
+                    'asset_code': h.code or '',
+                    'platform': h.platform or '',
+                    'amount': round(sell_amount, 0),
+                    'current_value': round(mv, 0),
+                    'pct_of_holding': round(sell_pct, 1),
+                    'profit_loss_pct': float(h.profit_loss_pct or 0),
+                })
+                remaining -= sell_amount
+
+            plan.append({
+                'priority': priority,
+                'timeline': timeline,
+                'urgency': urgency,
+                'direction': 'sell',
+                'layer': layer_name,
+                'deviation': round(layer_result['deviation'], 1),
+                'total_amount': round(adjustment, 0),
+                'actions': actions,
+                'reason': f'{layer_name}超配 {layer_result["deviation"]:+.1f}%，需减持 ¥{adjustment:,.0f} 回到目标比例',
+            })
+
+        else:
+            # 需要买入 — 推荐已有持仓中加仓或层级默认标的
+            buy_amount = abs(adjustment)
+            sorted_holdings = sorted(layer_holdings, key=lambda h: float(h.market_value or 0), reverse=True)
+
+            if sorted_holdings:
+                # 分配买入金额到现有持仓（按市值权重）
+                total_layer_value = sum(float(h.market_value or 0) for h in sorted_holdings)
+                for h in sorted_holdings:
+                    mv = float(h.market_value or 0)
+                    if total_layer_value > 0:
+                        weight = mv / total_layer_value
+                    else:
+                        weight = 1.0 / len(sorted_holdings)
+                    alloc = buy_amount * weight
+                    if alloc < 100:
+                        continue
+                    actions.append({
+                        'type': 'buy',
+                        'asset_name': h.name,
+                        'asset_code': h.code or '',
+                        'platform': h.platform or '',
+                        'amount': round(alloc, 0),
+                        'current_value': round(mv, 0),
+                        'profit_loss_pct': float(h.profit_loss_pct or 0),
+                    })
+            else:
+                # 该层无持仓，给出层级级别的建议
+                actions.append({
+                    'type': 'buy',
+                    'asset_name': f'{layer_name}（待选标的）',
+                    'asset_code': '',
+                    'platform': '',
+                    'amount': round(buy_amount, 0),
+                    'current_value': 0,
+                    'profit_loss_pct': 0,
+                })
+
+            plan.append({
+                'priority': priority,
+                'timeline': timeline,
+                'urgency': urgency,
+                'direction': 'buy',
+                'layer': layer_name,
+                'deviation': round(layer_result['deviation'], 1),
+                'total_amount': round(buy_amount, 0),
+                'actions': actions,
+                'reason': f'{layer_name}低配 {layer_result["deviation"]:+.1f}%，需增持 ¥{buy_amount:,.0f} 回到目标比例',
+            })
+
+    # 按优先级排序
+    plan.sort(key=lambda x: x['priority'])
+    return plan
+
+
 # 下跌应对协议数据（基于文档第三节）
 DRAWDOWN_PROTOCOLS = {
     "layer_1_2": {

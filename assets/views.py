@@ -23,7 +23,7 @@ from .models import (
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
-    calculate_rebalance, DRAWDOWN_PROTOCOLS
+    calculate_rebalance, DRAWDOWN_PROTOCOLS, generate_investment_plan
 )
 from .services.advisor import evaluate_portfolio, evaluate_asset
 from .services.ledger import snapshot_holding, record_holding_change, record_holding_removal
@@ -210,11 +210,14 @@ def rebalance_page(request):
     rebalance_result = calculate_rebalance(layers_data, total_value)
 
     from .services.rebalance import calculate_risk_alerts
-    holdings = Holding.objects.select_related('layer').all()
+    holdings = list(Holding.objects.select_related('layer').all())
     # 往再平衡的分析里追加持股风控预警
     risk_alerts = calculate_risk_alerts(holdings, total_value)
     # prepend risk alerts so they are highly visible
     rebalance_result['alerts'] = risk_alerts + rebalance_result.get('alerts', [])
+
+    # 生成具体投资执行计划
+    investment_plan = generate_investment_plan(layers_data, holdings, total_value, rebalance_result)
 
     context = {
         'total_value': total_value,
@@ -223,6 +226,7 @@ def rebalance_page(request):
         'layers_data': layers_data,
         'layers_json': json.dumps(layers_data, cls=DecimalEncoder, ensure_ascii=False),
         'drawdown_protocols': DRAWDOWN_PROTOCOLS,
+        'investment_plan': investment_plan,
     }
     return render(request, 'assets/rebalance.html', context)
 

@@ -110,6 +110,71 @@
     </div>
 </div>
 
+<!-- Investment Plan -->
+{% if investment_plan %}
+<div class="card mb-3 animate-in stagger-4">
+    <div class="card-header">
+        <h3>执行计划</h3>
+        <span class="text-xs text-muted">基于当前偏差生成的具体调仓方案</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        {% for item in investment_plan %}
+        <div style="padding: 16px; border-bottom: 1px solid var(--color-border);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                <div>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                        <span class="badge {% if item.urgency == 'urgent' %}badge-danger{% elif item.urgency == 'normal' %}badge-warning{% else %}badge-neutral{% endif %}" style="font-size: 0.7rem;">{{ item.timeline }}</span>
+                        <span class="badge {% if item.direction == 'sell' %}badge-danger{% else %}badge-success{% endif %}">
+                            {% if item.direction == 'sell' %}减持{% else %}增持{% endif %}
+                        </span>
+                        <strong>{{ item.layer }}</strong>
+                    </div>
+                    <div class="text-xs text-muted">{{ item.reason }}</div>
+                </div>
+                <div class="text-right" style="flex-shrink: 0; margin-left: 16px;">
+                    <div class="font-mono" style="font-size: 1.1rem; font-weight: 700; {% if item.direction == 'sell' %}color: var(--color-danger){% else %}color: var(--color-success){% endif %};">
+                        {% if item.direction == 'sell' %}-{% else %}+{% endif %}¥{{ item.total_amount|floatformat:0 }}
+                    </div>
+                    <div class="text-xs text-muted">偏差 {{ item.deviation }}%</div>
+                </div>
+            </div>
+            <table class="table" style="margin: 0;">
+                <thead><tr>
+                    <th>资产</th>
+                    <th>平台</th>
+                    <th class="text-right">{% if item.direction == 'sell' %}当前市值{% else %}现有市值{% endif %}</th>
+                    <th class="text-right">当前盈亏</th>
+                    <th class="text-right">{% if item.direction == 'sell' %}卖出金额{% else %}买入金额{% endif %}</th>
+                    {% if item.direction == 'sell' %}<th class="text-right">卖出比例</th>{% endif %}
+                </tr></thead>
+                <tbody>
+                {% for a in item.actions %}
+                <tr>
+                    <td>
+                        <strong>{{ a.asset_name }}</strong>
+                        {% if a.asset_code %}<span class="text-xs text-muted">{{ a.asset_code }}</span>{% endif %}
+                    </td>
+                    <td class="text-xs text-muted">{{ a.platform|default:"-" }}</td>
+                    <td class="text-right font-mono">{% if a.current_value %}¥{{ a.current_value|floatformat:0 }}{% else %}-{% endif %}</td>
+                    <td class="text-right font-mono {% if a.profit_loss_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
+                        {% if a.profit_loss_pct >= 0 %}+{% endif %}{{ a.profit_loss_pct|floatformat:1 }}%
+                    </td>
+                    <td class="text-right font-mono" style="font-weight: 600; {% if item.direction == 'sell' %}color: var(--color-danger){% else %}color: var(--color-success){% endif %};">
+                        ¥{{ a.amount|floatformat:0 }}
+                    </td>
+                    {% if item.direction == 'sell' %}
+                    <td class="text-right font-mono text-muted">{{ a.pct_of_holding|floatformat:0 }}%</td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <!-- Drawdown Protocol -->
 <div class="card animate-in">
     <div class="card-header">
