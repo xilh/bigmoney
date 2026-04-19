@@ -265,6 +265,28 @@ class EvaluationReport(models.Model):
         return f'{self.date.strftime("%Y-%m-%d %H:%M")} - 分数: {self.score}'
 
 
+class AssetEvaluation(models.Model):
+    """单资产 AI 深度评估"""
+    date = models.DateTimeField('评估时间', default=timezone.now)
+    asset_name = models.CharField('资产名称', max_length=200, db_index=True)
+    score = models.IntegerField('健康评分', default=0)
+    signal = models.CharField('操作信号', max_length=20)
+    signal_reason = models.CharField('信号理由', max_length=500)
+    risk_level = models.CharField('风险等级', max_length=20)
+    analysis_data = models.JSONField('分析详情', default=dict)
+    action_plan = models.TextField('操作建议', blank=True, default='')
+    risks = models.JSONField('风险点', default=list)
+    highlights = models.JSONField('亮点', default=list)
+
+    class Meta:
+        ordering = ['-date', '-id']
+        verbose_name = '资产评估'
+        verbose_name_plural = '资产评估'
+
+    def __str__(self):
+        return f'{self.asset_name} - {self.date.strftime("%Y-%m-%d %H:%M")} - {self.signal}'
+
+
 class AlertAction(models.Model):
     """风控预警处置记录"""
     ACTION_CHOICES = [

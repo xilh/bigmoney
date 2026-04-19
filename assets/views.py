@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
     Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES,
-    EvaluationReport,
+    EvaluationReport, AssetEvaluation,
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
     calculate_rebalance, DRAWDOWN_PROTOCOLS
 )
-from .services.advisor import evaluate_portfolio
+from .services.advisor import evaluate_portfolio, evaluate_asset
 from .services.ledger import snapshot_holding, record_holding_change, record_holding_removal
 
 
@@ -1152,6 +1152,122 @@ def api_advisor_evaluate(request):
 
 
 @require_POST
+def api_asset_evaluate(request):
+    """调用 AI 对单个资产进行深度评估"""
+    try:
+        body = json.loads(request.body)
+        asset_name = body.get('asset_name', '')
+        if not asset_name:
+            return JsonResponse({'success': False, 'error': '缺少资产名称'}, status=400)
+
+        # 查找持仓
+        holding = Holding.objects.select_related('layer').filter(name=asset_name).first()
+
+        # 构建完整组合数据（与组合评估一致）
+        layers_data, total_value = _get_layers_summary()
+        all_holdings = Holding.objects.select_related('layer').all()
+        all_holdings_data = []
+        for h in all_holdings:
+            atd = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
+            all_holdings_data.append({
+                'name': h.name,
+                'code': h.code,
+                'asset_type': h.asset_type,
+                'asset_type_display': atd,
+                'layer_name': h.layer.name,
+                'platform': h.platform,
+                'market_value': float(h.market_value or 0),
+                'profit_loss': float(h.profit_loss or 0),
+                'profit_loss_pct': float(h.profit_loss_pct or 0),
+                'quantity': float(h.quantity or 0),
+                'cost_price': float(h.cost_price) if h.cost_price else None,
+                'current_price': float(h.current_price) if h.current_price else None,
+            })
+
+        # 构建目标资产信息
+        asset_info = {'name': asset_name, 'is_active': holding is not None}
+        if holding:
+            asset_type_display = dict(ASSET_TYPE_CHOICES).get(holding.asset_type, holding.asset_type)
+            pct_of_total = float(holding.market_value or 0) / float(total_value) * 100 if total_value > 0 else 0
+            asset_info.update({
+                'code': holding.code,
+                'asset_type': holding.asset_type,
+                'asset_type_display': asset_type_display,
+                'layer_name': holding.layer.name,
+                'platform': holding.platform,
+                'market_value': float(holding.market_value or 0),
+                'quantity': float(holding.quantity or 0),
+                'cost_price': float(holding.cost_price) if holding.cost_price else None,
+                'current_price': float(holding.current_price) if holding.current_price else None,
+                'profit_loss': float(holding.profit_loss or 0),
+                'profit_loss_pct': float(holding.profit_loss_pct or 0),
+                'pct_of_total': pct_of_total,
+            })
+        else:
+            tx_sample = Transaction.objects.filter(asset_name=asset_name).first()
+            asset_info.update({
+                'code': '',
+                'asset_type_display': '未知',
+                'layer_name': '未知',
+                'platform': tx_sample.platform if tx_sample else '',
+            })
+
+        # 交易记录
+        action_labels = dict(Transaction.ACTION_CHOICES)
+        transactions = list(
+            Transaction.objects.filter(asset_name=asset_name)
+            .order_by('-date', '-created_at')
+            .values('action', 'quantity', 'price', 'amount', 'date', 'realized_pnl')
+        )
+        for tx in transactions:
+            tx['action_display'] = action_labels.get(tx['action'], tx['action'])
+            tx['date'] = tx['date'].strftime('%Y-%m-%d') if hasattr(tx['date'], 'strftime') else str(tx['date'])
+            tx['quantity'] = float(tx['quantity']) if tx['quantity'] else None
+            tx['price'] = float(tx['price']) if tx['price'] else None
+            tx['amount'] = float(tx['amount'] or 0)
+            tx['realized_pnl'] = float(tx['realized_pnl']) if tx['realized_pnl'] else None
+
+        # 历史市值
+        snapshots = Snapshot.objects.order_by('date').values('date', 'holdings_data')
+        value_history = []
+        for snap in snapshots:
+            for h in (snap['holdings_data'] or []):
+                if h.get('name') == asset_name:
+                    value_history.append({
+                        'date': snap['date'].strftime('%Y-%m-%d'),
+                        'market_value': float(h.get('market_value', 0)),
+                        'profit_loss': float(h.get('profit_loss', 0)),
+                    })
+                    break
+
+        result = evaluate_asset(
+            asset_info, transactions, value_history,
+            layers_data=layers_data, holdings_data=all_holdings_data, total_value=total_value,
+        )
+
+        # 保存评估记录
+        if result.get('success') and result.get('data'):
+            data = result['data']
+            ev = AssetEvaluation.objects.create(
+                asset_name=asset_name,
+                score=data.get('score', 0),
+                signal=data.get('signal', ''),
+                signal_reason=data.get('signal_reason', ''),
+                risk_level=data.get('risk_level', ''),
+                analysis_data=data.get('analysis', {}),
+                action_plan=data.get('action_plan', ''),
+                risks=data.get('risks', []),
+                highlights=data.get('highlights', []),
+            )
+            result['data']['date'] = ev.date.isoformat()
+
+        return JsonResponse(result)
+    except Exception as e:
+        logger.exception("api_asset_evaluate failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@require_POST
 def api_test_llm(request):
     """测试 LLM 连接"""
     import httpx
@@ -1381,6 +1497,39 @@ def _render_asset_detail(request, holding, asset_name):
             'profit_loss_pct': holding.profit_loss_pct,
         }
 
+    # 5. 单资产深度评估历史
+    asset_evals = list(
+        AssetEvaluation.objects.filter(asset_name=asset_name)
+        .order_by('-date')[:10]
+        .values('id', 'date', 'score', 'signal', 'signal_reason',
+                'risk_level', 'analysis_data', 'action_plan', 'risks', 'highlights')
+    )
+    for ae in asset_evals:
+        ae['date_display'] = ae['date'].strftime('%Y-%m-%d %H:%M')
+    latest_asset_eval_json = None
+    if asset_evals:
+        latest = asset_evals[0]
+        latest_asset_eval_json = json.dumps({
+            'score': latest['score'],
+            'signal': latest['signal'],
+            'signal_reason': latest['signal_reason'],
+            'risk_level': latest['risk_level'],
+            'analysis': latest['analysis_data'],
+            'action_plan': latest['action_plan'],
+            'risks': latest['risks'],
+            'highlights': latest['highlights'],
+            'date': latest['date'].isoformat(),
+        }, ensure_ascii=False)
+
+    # 检查 AI 顾问配置
+    provider = Setting.get('advisor_llm_provider', 'openai_compatible')
+    advisor_key = Setting.get('advisor_api_key', '')
+    advisor_url = Setting.get('advisor_api_url', '')
+    if provider == 'anthropic':
+        has_api_config = bool(advisor_key) or bool(advisor_url)
+    else:
+        has_api_config = bool(advisor_url)
+
     context = {
         'asset_name': asset_name,
         'holding': holding_data,
@@ -1388,10 +1537,13 @@ def _render_asset_detail(request, holding, asset_name):
         'transactions': transactions,
         'value_history_json': json.dumps(value_history, ensure_ascii=False),
         'evaluations': evaluations,
+        'asset_evals': asset_evals,
+        'latest_asset_eval_json': latest_asset_eval_json,
         'total_bought': total_bought,
         'total_sold': total_sold,
         'total_realized': total_realized,
         'tx_count': len(transactions),
+        'has_api_config': has_api_config,
     }
     return render(request, 'assets/asset_detail.html', context)
 

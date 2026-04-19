@@ -67,6 +67,136 @@ ADVISOR_PROMPT = """你是一位专业的个人投资顾问（CFA 持证），�
 """
 
 
+ASSET_EVAL_PROMPT = """你是一位专业的个人投资顾问（CFA 持证），正在为客户**深度分析一只具体的资产**。
+你将收到该资产的详细信息，以及客户的完整投资组合概况，请结合组合整体来分析。
+
+## 投资原则（必须遵守）
+
+客户采用五层资产配置体系（安全垫/债券核心/股票核心/另类对冲/卫星机会），每层有目标配比。
+- **5% 单票上限**：任何单只股票占总资产比例不得超过 5%，超过必须强烈警告减仓。
+- **核心持仓**（第1-3层）：大幅回撤时（>-30%），需判断是否具备护城河以度过周期。
+- **卫星仓位**（第5层）：严格止盈止损（-30%警示，-50%止损，-70%清仓；+50%/+100%/+200%阶梯止盈）。
+- **再平衡**：层级偏差 >5% 触发再平衡。
+- 投资逻辑破坏是主动卖出的核心信号。
+
+## 评估维度
+
+1. **基本面与投资逻辑**：基于资产类型（基金/股票/ETF/债券等）和代码，分析该资产的投资逻辑是否仍然成立。如果是股票，关注行业趋势与估值；如果是基金/ETF，关注跟踪标的和费率合理性。
+2. **盈亏分析**：结合成本价、现价、盈亏比例和上述止损止盈规则，判断当前是否处于合理区间。
+3. **仓位与组合适配**：结合组合全貌，评估该资产的仓位大小、与其他持仓的相关性、行业/平台集中度风险。
+4. **层级适配性**：该资产是否适合其所在的投资层级，是否应该调整层级。
+5. **历史走势解读**：基于提供的历史市值数据，分析趋势。
+6. **交易记录分析**：基于买卖记录，分析交易行为是否合理。
+7. **综合建议**：给出具体的操作建议，以及未来的关注要点。
+
+## 输出格式
+
+请返回纯 JSON（不要 markdown 代码块），格式如下：
+{
+  "signal": "buy|sell|hold|watch",
+  "signal_reason": "一句话核心理由",
+  "risk_level": "low|medium|high|critical",
+  "score": 85,
+  "analysis": {
+    "fundamentals": "基本面与投资逻辑分析（2-4句）",
+    "pnl_assessment": "盈亏状态评估（2-3句）",
+    "position_size": "仓位与组合适配评价（2-3句，需引用占比数据和同类持仓）",
+    "layer_fit": "层级适配性（1-2句）",
+    "trend": "走势趋势分析（2-3句）",
+    "trading_behavior": "交易行为评价（1-2句）"
+  },
+  "action_plan": "具体操作建议，包含条件触发点（3-5句）",
+  "risks": ["风险点1", "风险点2"],
+  "highlights": ["亮点1", "亮点2"]
+}
+
+## 注意事项
+- score 是 0-100 的整数，代表该资产的健康度/投资价值。
+- 分析必须结合组合整体情况，不要孤立看待单个资产。
+- 分析应当包含具体的数值引用，不要泛泛而谈。
+- 如果信息不足以做出判断，明确说明并给出保守建议。
+- 对于已清仓资产，重点分析历史表现和经验教训。
+"""
+
+
+def _build_asset_context(asset_info, transactions, value_history,
+                         layers_data=None, holdings_data=None, total_value=0):
+    """将单个资产的数据格式化为 LLM 可理解的文本上下文，含完整组合信息"""
+    lines = []
+
+    lines.append("## 目标资产信息")
+    lines.append(f"- 名称: {asset_info['name']}")
+    if asset_info.get('code'):
+        lines.append(f"- 代码: {asset_info['code']}")
+    lines.append(f"- 类型: {asset_info.get('asset_type_display', '未知')}")
+    lines.append(f"- 平台: {asset_info.get('platform', '未知')}")
+    lines.append(f"- 所属层级: {asset_info.get('layer_name', '未知')}")
+    lines.append(f"- 状态: {'当前持有' if asset_info.get('is_active') else '已清仓'}")
+    lines.append("")
+
+    if asset_info.get('is_active'):
+        lines.append("## 当前持仓")
+        lines.append(f"- 市值: ¥{asset_info['market_value']:,.0f}")
+        lines.append(f"- 数量: {asset_info['quantity']:.2f} 份")
+        if asset_info.get('cost_price'):
+            lines.append(f"- 成本价: ¥{asset_info['cost_price']:.4f}")
+        if asset_info.get('current_price'):
+            lines.append(f"- 现价: ¥{asset_info['current_price']:.4f}")
+        lines.append(f"- 持仓盈亏: ¥{asset_info['profit_loss']:+,.0f} ({asset_info['profit_loss_pct']:+.1f}%)")
+        if asset_info.get('pct_of_total'):
+            lines.append(f"- 占总资产比例: {asset_info['pct_of_total']:.1f}%")
+        lines.append("")
+
+    # Full portfolio context
+    if total_value > 0:
+        portfolio_text = _build_portfolio_context(layers_data or [], holdings_data or [], total_value)
+        lines.append(portfolio_text)
+        lines.append("")
+
+    if value_history:
+        lines.append("## 历史市值走势")
+        for v in value_history:
+            lines.append(f"- {v['date']}: 市值 ¥{v['market_value']:,.0f}, 盈亏 ¥{v['profit_loss']:+,.0f}")
+        lines.append("")
+
+    if transactions:
+        lines.append("## 交易记录")
+        for tx in transactions:
+            qty_str = f", 数量 {tx['quantity']:.2f}" if tx.get('quantity') else ""
+            price_str = f", 价格 ¥{tx['price']:.4f}" if tx.get('price') else ""
+            pnl_str = f", 已实现盈亏 ¥{tx['realized_pnl']:+,.0f}" if tx.get('realized_pnl') else ""
+            lines.append(f"- {tx['date']} {tx['action_display']}: ¥{tx['amount']:,.0f}{qty_str}{price_str}{pnl_str}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def evaluate_asset(asset_info, transactions, value_history,
+                   layers_data=None, holdings_data=None, total_value=0):
+    """
+    调用大模型对单个资产进行深度评估。
+
+    Returns:
+        dict: {success: bool, data: {...}, error: str}
+    """
+    config = _get_advisor_config()
+
+    context = _build_asset_context(
+        asset_info, transactions, value_history,
+        layers_data=layers_data, holdings_data=holdings_data, total_value=total_value,
+    )
+    user_message = f"{context}\n\n请结合该资产的详细数据和组合全貌，给出你的深度评估。"
+
+    try:
+        if config['provider'] == 'anthropic':
+            return _call_anthropic(user_message, config, system_prompt=ASSET_EVAL_PROMPT)
+        else:
+            return _call_openai_compatible(user_message, config, system_prompt=ASSET_EVAL_PROMPT)
+    except Exception as e:
+        logger.exception("evaluate_asset failed")
+        return {'success': False, 'data': None, 'error': str(e)}
+
+
 def _build_portfolio_context(layers_data, holdings_data, total_value):
     """将持仓数据格式化为 LLM 可理解的文本上下文"""
     lines = []
@@ -133,7 +263,7 @@ def evaluate_portfolio(layers_data, holdings_data, total_value):
         return {'success': False, 'data': None, 'error': str(e)}
 
 
-def _call_anthropic(user_message, config):
+def _call_anthropic(user_message, config, system_prompt=None):
     api_key = config['api_key']
     api_url = config.get('api_url', '')
 
@@ -152,7 +282,7 @@ def _call_anthropic(user_message, config):
             response = client.messages.create(
                 model=model,
                 max_tokens=config.get('max_tokens', 8192),
-                system=ADVISOR_PROMPT,
+                system=system_prompt or ADVISOR_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
             text = response.content[0].text
@@ -170,7 +300,7 @@ def _call_anthropic(user_message, config):
     return {'success': False, 'data': None, 'error': f'网络请求持续失败，可能由于代理或防火墙引起 (已重试3次): {str(last_err)}'}
 
 
-def _call_openai_compatible(user_message, config):
+def _call_openai_compatible(user_message, config, system_prompt=None):
     api_url = config['api_url']
     api_key = config['api_key']
     model = config['model']
@@ -192,7 +322,7 @@ def _call_openai_compatible(user_message, config):
     payload = {
         'model': model or 'default',
         'messages': [
-            {'role': 'system', 'content': ADVISOR_PROMPT},
+            {'role': 'system', 'content': system_prompt or ADVISOR_PROMPT},
             {'role': 'user', 'content': user_message},
         ],
         'max_tokens': config.get('max_tokens', 8192),

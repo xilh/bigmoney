@@ -95,10 +95,11 @@
         </div>
     </div>
 
-    <!-- AI Evaluations -->
+    <!-- AI Evaluations (from portfolio reports) -->
     <div class="card animate-in stagger-3">
         <div class="card-header" style="padding: 10px 16px;">
             <h3>AI 评估历史</h3>
+            <span class="text-xs text-muted">来自组合评估</span>
         </div>
         <div class="card-body" style="padding: 0;">
             {% if evaluations %}
@@ -122,11 +123,69 @@
                 {% endfor %}
             </div>
             {% else %}
-            <div class="text-center text-muted" style="padding:24px;">暂无 AI 评估记录。前往 <a href="{% url 'assets:advisor' %}" style="color:var(--color-primary);">AI 顾问</a> 生成评估。</div>
+            <div class="text-center text-muted" style="padding:24px;">暂无组合评估记录。前往 <a href="{% url 'assets:advisor' %}" style="color:var(--color-primary);">AI 顾问</a> 生成评估。</div>
             {% endif %}
         </div>
     </div>
 </div>
+
+<!-- Deep AI Evaluation -->
+<div class="card animate-in stagger-4" style="margin-bottom: 12px;">
+    <div class="card-header flex-between" style="padding: 10px 16px;">
+        <h3>AI 深度分析</h3>
+        <div style="display:flex; align-items:center; gap:8px;">
+            {% if asset_evals %}
+            <span class="text-xs text-muted" id="evalTimestamp">{{ asset_evals.0.date_display }}</span>
+            {% endif %}
+            {% if has_api_config %}
+            <button class="btn btn-sm btn-primary" id="btnDeepEval" onclick="startDeepEval()">{% if asset_evals %}重新分析{% else %}开始分析{% endif %}</button>
+            {% else %}
+            <span class="text-xs text-muted">请先在 <a href="{% url 'assets:settings' %}" style="color:var(--color-primary);">设置</a> 中配置 AI 顾问</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body" style="padding: 0;" id="deepEvalResults">
+        {% if not asset_evals %}
+        <div class="text-center text-muted" style="padding: 32px;">点击「开始分析」对该资产进行 AI 深度评估</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Evaluation History -->
+{% if asset_evals|length > 1 %}
+<div class="card animate-in stagger-5" style="margin-bottom: 12px;">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>历史评估记录</h3>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <div style="display:flex; flex-direction:column;">
+            {% for ae in asset_evals %}
+            {% if not forloop.first %}
+            <div style="padding: 10px 16px; border-bottom: 1px solid var(--color-border); cursor:pointer;" onclick="toggleHistoryDetail(this)">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="text-xs text-muted">{{ ae.date_display }}</span>
+                        <span class="badge {% if ae.signal == 'buy' %}badge-success{% elif ae.signal == 'sell' %}badge-danger{% elif ae.signal == 'hold' %}badge-neutral{% else %}badge-warning{% endif %}" style="font-size:0.7rem;">
+                            {% if ae.signal == 'buy' %}买入{% elif ae.signal == 'sell' %}卖出{% elif ae.signal == 'hold' %}持有{% else %}观望{% endif %}
+                        </span>
+                        <span class="badge {% if ae.risk_level == 'low' %}badge-success{% elif ae.risk_level == 'medium' %}badge-warning{% elif ae.risk_level == 'high' %}badge-danger{% else %}badge-danger{% endif %}" style="font-size:0.65rem;">
+                            {{ ae.risk_level }}
+                        </span>
+                        <span class="text-sm" style="font-weight:600;">{{ ae.score }}分</span>
+                    </div>
+                    <span class="text-xs text-muted">▼</span>
+                </div>
+                <div class="text-sm" style="margin-top:4px;">{{ ae.signal_reason }}</div>
+                <div class="history-detail" style="display:none; margin-top:8px; padding-top:8px; border-top:1px solid var(--color-border);">
+                    <div class="text-xs text-muted" style="margin-bottom:6px;">{{ ae.action_plan }}</div>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% endblock %}
 
@@ -172,6 +231,158 @@ if (valueData.length > 1) {
     });
 } else {
     document.getElementById('valueChart').parentElement.innerHTML = '<div class="text-center text-muted" style="padding:60px 0;">需要至少两张快照才能绘制走势图</div>';
+}
+
+// Deep AI Evaluation
+const SIGNAL_MAP = {buy: {label: '买入', cls: 'badge-success'}, sell: {label: '卖出', cls: 'badge-danger'}, hold: {label: '持有', cls: 'badge-neutral'}, watch: {label: '观望', cls: 'badge-warning'}};
+const RISK_MAP = {low: {label: '低风险', cls: 'badge-success'}, medium: {label: '中风险', cls: 'badge-warning'}, high: {label: '高风险', cls: 'badge-danger'}, critical: {label: '极高风险', cls: 'badge-danger'}};
+
+function getScoreColor(score) {
+    if (score >= 80) return 'var(--color-success)';
+    if (score >= 60) return 'var(--color-warning)';
+    return 'var(--color-danger)';
+}
+
+function toggleHistoryDetail(el) {
+    const detail = el.querySelector('.history-detail');
+    const arrow = el.querySelector('.text-xs.text-muted:last-child');
+    if (detail.style.display === 'none') {
+        detail.style.display = 'block';
+        if (arrow) arrow.textContent = '▲';
+    } else {
+        detail.style.display = 'none';
+        if (arrow) arrow.textContent = '▼';
+    }
+}
+
+// Auto-load latest evaluation
+const latestEvalJson = '{{ latest_asset_eval_json|default:""|escapejs }}';
+if (latestEvalJson) {
+    try { renderDeepEval(JSON.parse(latestEvalJson)); } catch(e) {}
+}
+
+function startDeepEval() {
+    const btn = document.getElementById('btnDeepEval');
+    const container = document.getElementById('deepEvalResults');
+
+    btn.disabled = true;
+    btn.textContent = '分析中...';
+
+    container.innerHTML = `
+        <div style="padding: 32px; text-align: center;">
+            <div class="spinner"></div>
+            <p style="margin-top: 12px;">AI 正在深度分析「{{ asset_name }}」，请稍候...</p>
+        </div>
+    `;
+
+    fetch('{% url "assets:api_asset_evaluate" %}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}'},
+        body: JSON.stringify({asset_name: '{{ asset_name|escapejs }}'}),
+    })
+    .then(r => r.json())
+    .then(result => {
+        btn.disabled = false;
+        btn.textContent = '重新分析';
+        if (result.success && result.data) {
+            renderDeepEval(result.data);
+            // Update timestamp
+            const ts = document.getElementById('evalTimestamp');
+            if (ts) ts.textContent = '刚刚';
+            else {
+                const header = document.querySelector('#btnDeepEval').parentElement;
+                const span = document.createElement('span');
+                span.className = 'text-xs text-muted';
+                span.id = 'evalTimestamp';
+                span.textContent = '刚刚';
+                header.insertBefore(span, header.firstChild);
+            }
+        } else {
+            container.innerHTML = `<div style="padding: 16px; color: var(--color-danger);">评估失败：${result.error || '未知错误'}</div>`;
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.textContent = '重新分析';
+        container.innerHTML = `<div style="padding: 16px; color: var(--color-danger);">网络错误：${err.message}</div>`;
+    });
+}
+
+function renderDeepEval(data) {
+    const container = document.getElementById('deepEvalResults');
+    const score = data.score || 0;
+    const color = getScoreColor(score);
+    const signal = SIGNAL_MAP[data.signal] || SIGNAL_MAP.watch;
+    const risk = RISK_MAP[data.risk_level] || RISK_MAP.medium;
+    const analysis = data.analysis || {};
+
+    let html = `<div style="padding: 16px;">`;
+
+    // Header: score + signal + risk
+    html += `<div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;">`;
+    // Score circle
+    html += `<div style="position: relative; width: 64px; height: 64px; flex-shrink: 0;">
+        <svg viewBox="0 0 36 36" style="width: 64px; height: 64px; transform: rotate(-90deg);">
+            <circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3"/>
+            <circle cx="18" cy="18" r="15.5" fill="none" stroke="${color}" stroke-width="3"
+                stroke-dasharray="${score * 0.975} 100" stroke-linecap="round"/>
+        </svg>
+        <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; font-weight: 700; color: ${color};">${score}</div>
+    </div>`;
+    // Signal + risk badges
+    html += `<div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; gap: 8px;">
+            <span class="badge ${signal.cls}" style="font-size: 0.8rem;">${signal.label}</span>
+            <span class="badge ${risk.cls}" style="font-size: 0.75rem;">${risk.label}</span>
+        </div>
+        <div class="text-sm" style="font-weight: 600;">${data.signal_reason || ''}</div>
+    </div>`;
+    html += `</div>`;
+
+    // Analysis sections
+    const sections = [
+        {key: 'fundamentals', title: '基本面与投资逻辑'},
+        {key: 'pnl_assessment', title: '盈亏状态评估'},
+        {key: 'position_size', title: '仓位合理性'},
+        {key: 'layer_fit', title: '层级适配性'},
+        {key: 'trend', title: '走势趋势'},
+        {key: 'trading_behavior', title: '交易行为'},
+    ];
+    for (const sec of sections) {
+        if (analysis[sec.key]) {
+            html += `<div style="margin-bottom: 12px;">
+                <div class="text-xs text-muted" style="margin-bottom: 2px; font-weight: 600;">${sec.title}</div>
+                <div class="text-sm">${analysis[sec.key]}</div>
+            </div>`;
+        }
+    }
+
+    // Action plan
+    if (data.action_plan) {
+        html += `<div style="margin-bottom: 12px; padding: 10px 14px; background: rgba(59,130,246,0.08); border-radius: 6px; border-left: 3px solid var(--color-primary);">
+            <div class="text-xs text-muted" style="margin-bottom: 2px; font-weight: 600;">操作建议</div>
+            <div class="text-sm">${data.action_plan}</div>
+        </div>`;
+    }
+
+    // Highlights & Risks
+    if (data.highlights && data.highlights.length) {
+        html += `<div style="margin-bottom: 8px;">`;
+        for (const h of data.highlights) {
+            html += `<div class="text-sm" style="color: var(--color-success); margin-bottom: 2px;">+ ${h}</div>`;
+        }
+        html += `</div>`;
+    }
+    if (data.risks && data.risks.length) {
+        html += `<div style="margin-bottom: 8px;">`;
+        for (const r of data.risks) {
+            html += `<div class="text-sm" style="color: var(--color-danger); margin-bottom: 2px;">- ${r}</div>`;
+        }
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    container.innerHTML = html;
 }
 </script>
 {% endblock %}
