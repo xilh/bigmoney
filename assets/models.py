@@ -94,8 +94,9 @@ class Holding(models.Model):
             raise ValidationError({'quantity': '数量不能为负数'})
 
     def save(self, *args, **kwargs):
-        """自动计算盈亏"""
+        """自动计算盈亏，必要时从市值和盈亏反推成本"""
         if self.cost_price and self.current_price and self.quantity:
+            # 有完整价格信息，精确计算
             cost_total = self.cost_price * self.quantity
             self.market_value = (self.current_price * self.quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             self.profit_loss = (self.market_value - cost_total).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -103,6 +104,15 @@ class Holding(models.Model):
                 self.profit_loss_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
             else:
                 self.profit_loss_pct = Decimal('0')
+        elif not self.cost_price and self.market_value and self.profit_loss:
+            # 无成本价但有市值和非零盈亏，反推成本并计算收益率
+            cost_total = self.market_value - self.profit_loss
+            if cost_total > 0:
+                self.profit_loss_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                if self.quantity and self.quantity > 0:
+                    self.cost_price = (cost_total / self.quantity).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                    if self.market_value and self.quantity:
+                        self.current_price = (self.market_value / self.quantity).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
         super().save(*args, **kwargs)
 
 

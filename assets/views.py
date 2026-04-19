@@ -718,11 +718,13 @@ def api_confirm_upload(request):
                     holding.source = 'screenshot'
                     holding.save()
                     if not has_price_info and item.get('market_value'):
-                        Holding.objects.filter(pk=holding.pk).update(
-                            market_value=market_value,
-                            profit_loss=profit_loss,
-                            profit_loss_pct=profit_loss_pct,
-                        )
+                        # save() 可能已从 market_value/profit_loss 反推了成本和收益率
+                        # 仅回写 save() 不会覆盖的原始 market_value 和 profit_loss
+                        update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
+                        if not holding.cost_price:
+                            # save() 没能反推成本（如 profit_loss 为 0），保留 OCR 提供的收益率
+                            update_fields['profit_loss_pct'] = profit_loss_pct
+                        Holding.objects.filter(pk=holding.pk).update(**update_fields)
                     record_holding_change(holding, old_data, source='ocr')
                     updated_count += 1
                 else:
@@ -742,11 +744,10 @@ def api_confirm_upload(request):
                     )
                     holding.save()
                     if not has_price_info and item.get('market_value'):
-                        Holding.objects.filter(pk=holding.pk).update(
-                            market_value=market_value,
-                            profit_loss=profit_loss,
-                            profit_loss_pct=profit_loss_pct,
-                        )
+                        update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
+                        if not holding.cost_price:
+                            update_fields['profit_loss_pct'] = profit_loss_pct
+                        Holding.objects.filter(pk=holding.pk).update(**update_fields)
                     record_holding_change(holding, old_data=None, source='ocr')
                     created_count += 1
 
@@ -1492,7 +1493,7 @@ def _render_asset_detail(request, holding, asset_name):
             'cost_price': holding.cost_price,
             'current_price': holding.current_price,
             'market_value': holding.market_value,
-            'cost_total': (holding.cost_price or 0) * (holding.quantity or 0),
+            'cost_total': (holding.cost_price * holding.quantity) if (holding.cost_price and holding.quantity) else (holding.market_value - holding.profit_loss) if (holding.market_value and holding.profit_loss is not None) else 0,
             'profit_loss': holding.profit_loss,
             'profit_loss_pct': holding.profit_loss_pct,
         }
