@@ -66,6 +66,7 @@
             <div class="btn-group">
                 <button class="btn btn-sm btn-primary" onclick="confirmFlow('transfer', {{ summary.initial_gap.gap|floatformat:0 }}, '{{ summary.initial_gap.date }}')">确认初始投入</button>
                 <button class="btn btn-sm btn-secondary" onclick="editFlow('{{ summary.initial_gap.gap|floatformat:0 }}', '{{ summary.initial_gap.date }}', 'transfer')">调整金额</button>
+                <button class="btn btn-sm" style="border:none;background:transparent;color:var(--color-text-muted);" onclick="dismissCashflowAlert('{{ summary.initial_gap.key }}')" title="忽略此提示">&times;</button>
             </div>
         </div>
     </div>
@@ -98,6 +99,7 @@
                 <button class="btn btn-sm btn-primary" onclick="confirmFlow('withdraw', {{ p.unreconciled|floatformat:0|cut:'-' }}, '{{ p.end_date }}')">确认转出</button>
                 {% endif %}
                 <button class="btn btn-sm btn-secondary" onclick="editFlow('{{ p.unreconciled|floatformat:0|cut:'-' }}', '{{ p.end_date }}', '{% if p.unreconciled > 0 %}transfer{% else %}withdraw{% endif %}')">调整</button>
+                <button class="btn btn-sm" style="border:none;background:transparent;color:var(--color-text-muted);" onclick="dismissCashflowAlert('{{ p.end_date }}')" title="忽略此提示">&times;</button>
             </div>
         </div>
     </div>
@@ -228,6 +230,18 @@ async function submitFlow(action, amount, flowDate, notes) {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
         body: JSON.stringify({action, amount, date: flowDate, notes}),
+    });
+    const data = await resp.json();
+    if (data.success) { location.reload(); }
+    else { alert(data.error || '操作失败'); }
+}
+
+async function dismissCashflowAlert(key) {
+    if (!confirm('忽略此提示后，该阶段的差额将被完全计入投资盈亏。确定要忽略吗？')) return;
+    const resp = await fetch('{% url "assets:api_alert_dismiss" %}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+        body: JSON.stringify({cashflow_key: key}),
     });
     const data = await resp.json();
     if (data.success) { location.reload(); }

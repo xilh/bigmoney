@@ -67,44 +67,29 @@
 </div>
 {% endif %}
 
-<!-- Snapshot Compare -->
+<!-- AI History Summary -->
 {% if snapshots|length >= 2 %}
-<div class="card animate-in stagger-2" style="margin-bottom: 12px;">
-    <div class="card-header" style="padding: 10px 16px;">
-        <h3>🔍 快照对比 — 找出涨跌原因</h3>
+<div class="card animate-in stagger-2" style="margin-bottom: 12px; border-top: 3px solid var(--color-primary);">
+    <div class="card-header flex-between" style="padding: 10px 16px;">
+        <h3>✨ AI 资产变动洞察</h3>
         <div style="display: flex; gap: 8px; align-items: center;">
-            <select id="compareOld" class="form-control" style="font-size: 0.8rem; width: auto;">
-                {% for s in snapshots reversed %}
-                <option value="{{ s.id }}" {% if forloop.counter == 2 %}selected{% endif %}>{{ s.date|date:"Y-m-d" }}  ¥{{ s.total_value|floatformat:0 }}</option>
-                {% endfor %}
+            <select id="aiSummaryProvider" class="form-control" style="font-size: 0.8rem; width: auto; max-width: 120px;">
+                <option value="advisor">AI 投顾专线</option>
+                <option value="ocr">OCR 识别模型</option>
             </select>
-            <span class="text-muted">→</span>
-            <select id="compareNew" class="form-control" style="font-size: 0.8rem; width: auto;">
-                {% for s in snapshots reversed %}
-                <option value="{{ s.id }}" {% if forloop.counter0 == 0 %}selected{% endif %}>{{ s.date|date:"Y-m-d" }}  ¥{{ s.total_value|floatformat:0 }}</option>
-                {% endfor %}
-            </select>
-            <button class="btn btn-primary btn-sm" onclick="compareSnapshots()">对比</button>
+            <button class="btn btn-primary btn-sm" id="btnAiSummary" onclick="generateHistorySummary()">生成总结</button>
         </div>
     </div>
-    <div id="compareResults" class="hidden">
-        <div id="compareSummary" style="padding: 12px 16px; border-bottom: 1px solid var(--color-border);"></div>
-        <div class="card-body" style="padding: 0; max-height: 360px; overflow-y: auto;">
-            <table>
-                <thead>
-                    <tr>
-                        <th style="padding: 6px 16px;">持仓</th>
-                        <th style="padding: 6px 8px;">层级</th>
-                        <th class="text-right" style="padding: 6px 8px;">旧市值</th>
-                        <th class="text-right" style="padding: 6px 8px;">新市值</th>
-                        <th class="text-right" style="padding: 6px 16px;">变动</th>
-                    </tr>
-                </thead>
-                <tbody id="compareBody"></tbody>
-            </table>
+    <div class="card-body" style="padding: 12px 16px;">
+        <div id="aiSummaryLoading" class="hidden text-center text-muted" style="padding: 20px;">
+            <div class="spinner" style="display:inline-block; margin-right:8px; border:2px solid var(--color-text-muted); border-top-color:var(--color-primary); border-radius:50%; width:16px; height:16px; animation:spin 1s linear infinite;"></div>
+            AI 正在分析历次快照数据及资金流动...
         </div>
+        <div id="aiSummaryResult" class="hidden" style="white-space: pre-wrap; line-height: 1.6; font-size: 0.95rem; color: var(--color-text);"></div>
+        <div id="aiSummaryEmpty" class="text-muted text-center" style="padding: 10px;">点击“生成总结”由 AI 为您复盘历史资产变动原因。</div>
     </div>
 </div>
+<style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
 {% endif %}
 
 <!-- Snapshots + Transactions side by side -->
@@ -616,5 +601,47 @@ function deleteTx(id) {
     .catch(e => showToast('请求失败', 'error'));
 }
 
+function generateHistorySummary() {
+    const btn = document.getElementById('btnAiSummary');
+    const loading = document.getElementById('aiSummaryLoading');
+    const resultDiv = document.getElementById('aiSummaryResult');
+    const emptyMsg = document.getElementById('aiSummaryEmpty');
+    const providerSelect = document.getElementById('aiSummaryProvider');
+    const purpose = providerSelect ? providerSelect.value : 'advisor';
+
+    btn.disabled = true;
+    loading.classList.remove('hidden');
+    resultDiv.classList.add('hidden');
+    emptyMsg.classList.add('hidden');
+
+    fetch('{% url "assets:api_history_summary" %}', {
+        method: 'POST',
+        headers: { 
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}' 
+        },
+        body: JSON.stringify({ purpose: purpose })
+    })
+    .then(r => r.json())
+    .then(data => {
+        loading.classList.add('hidden');
+        if (data.success) {
+            resultDiv.innerText = data.summary;
+            resultDiv.classList.remove('hidden');
+            btn.innerText = '重新生成';
+            btn.disabled = false;
+        } else {
+            emptyMsg.classList.remove('hidden');
+            btn.disabled = false;
+            showToast('生成失败: ' + data.error, 'error');
+        }
+    })
+    .catch(e => {
+        loading.classList.add('hidden');
+        emptyMsg.classList.remove('hidden');
+        btn.disabled = false;
+        showToast('请求失败', 'error');
+    });
+}
 </script>
 {% endblock %}

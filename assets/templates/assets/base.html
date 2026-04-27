@@ -74,7 +74,100 @@
     <!-- Mobile Toggle -->
     <button class="mobile-toggle" id="mobileToggle" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
 
+    <!-- Global Sell Modal -->
+    <div class="modal-overlay" id="globalSellModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>卖出 / 清仓 <span id="sellModalAssetName" style="font-size: 0.9em; font-weight: normal; color: var(--color-text-muted);"></span></h3>
+                <button class="modal-close" onclick="closeSellModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="sellHoldingId">
+                <div class="form-group">
+                    <label class="form-label">卖出份额/数量 *</label>
+                    <input type="number" class="form-control" id="sellQuantity" step="any" placeholder="输入卖出份额">
+                    <div class="text-xs text-muted mt-1">当前持有: <span id="sellCurrentQty" class="font-mono">0</span> 份 <span style="color:var(--color-primary);cursor:pointer;margin-left:8px;text-decoration:underline;" onclick="document.getElementById('sellQuantity').value = document.getElementById('sellCurrentQty').textContent;">全部卖出</span></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">卖出总金额 (¥) *</label>
+                    <input type="number" class="form-control" id="sellAmount" step="any" placeholder="输入卖出得到的总金额">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeSellModal()">取消</button>
+                <button class="btn btn-danger" id="btnConfirmSell" onclick="confirmSell()">确认卖出</button>
+            </div>
+        </div>
+    </div>
+
     <script src="{% static 'assets/js/app.js' %}"></script>
+    <script>
+    function openSellModal(id, name, qty) {
+        document.getElementById('sellHoldingId').value = id;
+        document.getElementById('sellModalAssetName').textContent = '- ' + name;
+        document.getElementById('sellCurrentQty').textContent = qty;
+        document.getElementById('sellQuantity').value = '';
+        document.getElementById('sellAmount').value = '';
+        document.getElementById('globalSellModal').classList.add('active');
+    }
+    function closeSellModal() {
+        document.getElementById('globalSellModal').classList.remove('active');
+    }
+    function confirmSell() {
+        const id = document.getElementById('sellHoldingId').value;
+        const qty = parseFloat(document.getElementById('sellQuantity').value) || 0;
+        const amt = parseFloat(document.getElementById('sellAmount').value) || 0;
+        
+        if (qty < 0 || amt <= 0) {
+            if (typeof showToast === 'function') showToast('请输入有效的卖出金额，且份额不能为负', 'error');
+            else alert('请输入有效的卖出金额，且份额不能为负');
+            return;
+        }
+        
+        const btn = document.getElementById('btnConfirmSell');
+        btn.disabled = true;
+        btn.textContent = '处理中...';
+        
+        // Get CSRF token
+        let csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value;
+        if (!csrfToken) {
+            const cookies = document.cookie.split(';');
+            for (let c of cookies) {
+                if (c.trim().startsWith('csrftoken=')) {
+                    csrfToken = c.trim().substring(10);
+                    break;
+                }
+            }
+        }
+        
+        fetch(`/api/holding/${id}/sell/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken || '{{ csrf_token }}',
+            },
+            body: JSON.stringify({quantity: qty, amount: amt}),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (typeof showToast === 'function') showToast('卖出操作成功', 'success');
+                closeSellModal();
+                setTimeout(() => location.reload(), 500);
+            } else {
+                if (typeof showToast === 'function') showToast('卖出失败: ' + data.error, 'error');
+                else alert('卖出失败: ' + data.error);
+                btn.disabled = false;
+                btn.textContent = '确认卖出';
+            }
+        }).catch(err => {
+            if (typeof showToast === 'function') showToast('网络错误: ' + err.message, 'error');
+            else alert('网络错误: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = '确认卖出';
+        });
+    }
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

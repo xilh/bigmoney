@@ -154,6 +154,21 @@ ASSET_SEARCH_PROMPT = """你是一位顶级的宏观策略分析师与个人财�
 }
 """
 
+HISTORY_SUMMARY_PROMPT = """你是一位专业的个人投资顾问（CFA 持证），正在为客户总结其历史资产变动情况。
+你将收到客户过去一段时间内（多个历史快照）的资产总值、各层级资产分布，以及该期间发生的净资金流入/流出数据。
+
+## 评估维度
+
+请基于提供的数据，总结资产总值发生变化的核心原因，具体包括：
+1. **净投入 vs 投资盈亏**：资产的增长/减少，有多少是由客户的净资金转入/转出造成的，有多少是纯粹的市场投资盈亏造成的？
+2. **驱动层级分析**：观察各层级资产市值的变化，指出哪些层级（如股票核心、卫星机会、另类对冲等）是导致盈利或亏损的主要驱动力。
+3. **趋势点评**：对整体资产的走势给出简短的专业点评和鼓励，若回撤较大则给出安抚与风险提示。
+
+## 输出格式
+
+请直接返回一段排版清晰、便于阅读的纯文本（可以使用换行和简单的列表符号，如 -，不要使用复杂的 Markdown 标题、不要使用 HTML，不要包含任何前言或后语，直接输出总结正文）。字数控制在 200 - 300 字左右。
+"""
+
 
 def _build_asset_context(asset_info, transactions, value_history,
                          layers_data=None, holdings_data=None, total_value=0):
@@ -313,8 +328,15 @@ def _build_portfolio_context(layers_data, holdings_data, total_value):
     return "\n".join(lines)
 
 
-def _get_advisor_config():
-    """获取 AI 顾问专用的 LLM 配置，与 OCR 配置独立。"""
+def _get_llm_config(purpose='advisor'):
+    if purpose == 'ocr':
+        return {
+            'provider': Setting.get('llm_provider', 'openai_compatible'),
+            'api_url': Setting.get('llm_api_url', ''),
+            'api_key': Setting.get('llm_api_key', ''),
+            'model': Setting.get('llm_model', ''),
+            'max_tokens': int(Setting.get('llm_max_tokens', '2048')),
+        }
     return {
         'provider': Setting.get('advisor_llm_provider', 'openai_compatible'),
         'api_url': Setting.get('advisor_api_url', ''),
@@ -322,6 +344,11 @@ def _get_advisor_config():
         'model': Setting.get('advisor_model', ''),
         'max_tokens': int(Setting.get('advisor_max_tokens', '8192')),
     }
+
+
+def _get_advisor_config():
+    """获取 AI 顾问专用的 LLM 配置，与 OCR 配置独立。"""
+    return _get_llm_config('advisor')
 
 
 def evaluate_portfolio(layers_data, holdings_data, total_value):
@@ -346,7 +373,63 @@ def evaluate_portfolio(layers_data, holdings_data, total_value):
         return {'success': False, 'data': None, 'error': str(e)}
 
 
-def _call_anthropic(user_message, config, system_prompt=None):
+def generate_history_summary(purpose='advisor'):
+    """
+    调用大模型对历史快照进行总结。
+    """
+    from ..models import Snapshot, Transaction
+    from django.db.models import Sum
+
+    config = _get_llm_config(purpose)
+    
+    # 获取最近 12 个快照（按时间正序排列以便模型理解时间线）
+    snapshots = list(Snapshot.objects.order_by('-date')[:12])
+    snapshots.reverse()
+    
+    if len(snapshots) < 2:
+        return {'success': False, 'data': None, 'error': '快照数量不足，无法生成历史总结（至少需要2个快照）'}
+
+    lines = ["## 历史快照与资金流动数据"]
+    
+    for i in range(len(snapshots)):
+        s = snapshots[i]
+        date_str = s.date.strftime('%Y-%m-%d')
+        lines.append(f"\n### 快照 {date_str}")
+        lines.append(f"- 总资产: ¥{s.total_value:,.0f}")
+        if s.layer_values:
+            lines.append("- 层级分布:")
+            for k, v in s.layer_values.items():
+                lines.append(f"  - {k}: ¥{v:,.0f}")
+        
+        # 如果不是最后一个快照，计算到下一个快照之间的净流入/流出
+        if i < len(snapshots) - 1:
+            next_s = snapshots[i+1]
+            start_date = s.date.date() if hasattr(s.date, 'date') else s.date
+            end_date = next_s.date.date() if hasattr(next_s.date, 'date') else next_s.date
+            
+            flows = Transaction.objects.filter(
+                date__gt=start_date, date__lte=end_date,
+                action__in=['transfer', 'withdraw'],
+            )
+            transfers = flows.filter(action='transfer').aggregate(t=Sum('amount'))['t'] or 0
+            withdrawals = flows.filter(action='withdraw').aggregate(t=Sum('amount'))['t'] or 0
+            net_flow = transfers - withdrawals
+            
+            lines.append(f"\n=> 期间资金净流动 ({start_date} 至 {end_date}): {'+' if net_flow >= 0 else ''}¥{net_flow:,.0f}")
+
+    user_message = "\n".join(lines) + "\n\n请根据以上数据，生成历史资产变动的总结报告。"
+
+    try:
+        if config['provider'] == 'anthropic':
+            return _call_anthropic(user_message, config, system_prompt=HISTORY_SUMMARY_PROMPT, expect_json=False)
+        else:
+            return _call_openai_compatible(user_message, config, system_prompt=HISTORY_SUMMARY_PROMPT, expect_json=False)
+    except Exception as e:
+        logger.exception("generate_history_summary failed")
+        return {'success': False, 'data': None, 'error': str(e)}
+
+
+def _call_anthropic(user_message, config, system_prompt=None, expect_json=True):
     api_key = config['api_key']
     api_url = config.get('api_url', '')
 
@@ -369,7 +452,10 @@ def _call_anthropic(user_message, config, system_prompt=None):
                 messages=[{"role": "user", "content": user_message}],
             )
             text = response.content[0].text
-            return _parse_response(text)
+            if expect_json:
+                return _parse_response(text)
+            else:
+                return {'success': True, 'data': text.strip(), 'error': ''}
         except getattr(anthropic, 'APIStatusError', Exception) as e:
             if getattr(e, 'status_code', 0) in (429, 500, 502, 503, 504):
                 last_err = e
@@ -383,7 +469,7 @@ def _call_anthropic(user_message, config, system_prompt=None):
     return {'success': False, 'data': None, 'error': f'网络请求持续失败，可能由于代理或防火墙引起 (已重试3次): {str(last_err)}'}
 
 
-def _call_openai_compatible(user_message, config, system_prompt=None):
+def _call_openai_compatible(user_message, config, system_prompt=None, expect_json=True):
     api_url = config['api_url']
     api_key = config['api_key']
     model = config['model']
@@ -419,7 +505,10 @@ def _call_openai_compatible(user_message, config, system_prompt=None):
             resp.raise_for_status()
             result = resp.json()
             text = result['choices'][0]['message']['content']
-            return _parse_response(text)
+            if expect_json:
+                return _parse_response(text)
+            else:
+                return {'success': True, 'data': text.strip(), 'error': ''}
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (429, 500, 502, 503, 504):
                 last_err = e

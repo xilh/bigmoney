@@ -518,6 +518,88 @@ def api_holding_delete(request, holding_id):
 
 
 @require_POST
+def api_holding_sell(request, holding_id):
+    """卖出持仓"""
+    try:
+        holding = get_object_or_404(Holding, id=holding_id)
+        data = json.loads(request.body)
+        
+        sell_qty = Decimal(str(data.get('quantity', 0) or 0))
+        sell_amount = Decimal(str(data.get('amount', 0) or 0))
+        
+        if sell_amount <= 0:
+            return JsonResponse({'success': False, 'error': '卖出金额必须大于0'}, status=400)
+            
+        if sell_qty < 0:
+            return JsonResponse({'success': False, 'error': '卖出数量不能为负'}, status=400)
+            
+        if sell_qty == 0 and holding.quantity > 0:
+            return JsonResponse({'success': False, 'error': '由于存在持仓份额，卖出数量必须大于0'}, status=400)
+            
+        sell_price = sell_amount / sell_qty if sell_qty > 0 else Decimal('0')
+        cost_price = holding.cost_price or Decimal('0')
+        
+        if sell_qty == 0:
+            approx_cost = holding.market_value if holding.market_value else Decimal('0')
+            realized_pnl = sell_amount - approx_cost
+        else:
+            realized_pnl = sell_amount - (cost_price * sell_qty)
+        
+        # 判断是否清仓
+        if sell_qty >= holding.quantity:
+            # 清仓
+            from .services.ledger import Transaction
+            Transaction.objects.create(
+                holding=None,
+                action='sell',
+                asset_name=holding.name,
+                quantity=sell_qty,
+                price=sell_price,
+                amount=sell_amount,
+                date=timezone.now().date(),
+                source='manual',
+                realized_pnl=realized_pnl,
+                platform=holding.platform,
+                notes='清仓卖出'
+            )
+            holding.delete()
+        else:
+            # 部分卖出
+            from .services.ledger import Transaction
+            Transaction.objects.create(
+                holding=holding,
+                action='sell',
+                asset_name=holding.name,
+                quantity=sell_qty,
+                price=sell_price,
+                amount=sell_amount,
+                date=timezone.now().date(),
+                source='manual',
+                realized_pnl=realized_pnl,
+                platform=holding.platform,
+                notes='部分卖出'
+            )
+            # 更新持仓信息
+            holding.quantity -= sell_qty
+            # 当前价保持不变，市值=现价*剩余数量
+            current_price = holding.current_price or Decimal('0')
+            holding.market_value = (current_price * holding.quantity).quantize(Decimal('0.01'))
+            # 盈亏重新计算：当前市值 - (剩余数量 * 成本价)
+            remaining_cost = holding.quantity * cost_price
+            holding.profit_loss = holding.market_value - remaining_cost
+            if remaining_cost > 0:
+                holding.profit_loss_pct = (holding.profit_loss / remaining_cost * 100).quantize(Decimal('0.0001'))
+            else:
+                holding.profit_loss_pct = Decimal('0')
+            # 阻止触发自动台账
+            holding.save(update_fields=['quantity', 'market_value', 'profit_loss', 'profit_loss_pct', 'updated_at'])
+            
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_POST
 def api_transaction_create(request):
     """记录一笔资金出入"""
     try:
@@ -641,13 +723,27 @@ def api_upload_screenshot(request):
 
         upload.save()
 
+        missing_holdings = []
+        platform = result.get('platform', '')
+        if result['success'] and platform:
+            ocr_names = {item['name'] for item in result.get('data', []) if 'name' in item}
+            missing_qs = Holding.objects.filter(platform=platform).exclude(name__in=ocr_names)
+            for h in missing_qs:
+                missing_holdings.append({
+                    'id': h.id,
+                    'name': h.name,
+                    'quantity': float(h.quantity) if h.quantity else 0,
+                    'market_value': float(h.market_value) if h.market_value else 0
+                })
+
         return JsonResponse({
             'success': result['success'],
             'upload_id': upload.id,
             'data': result['data'],
-            'platform': result.get('platform', ''),
+            'platform': platform,
             'error': result.get('error', ''),
             'existing_holdings': existing_holdings,
+            'missing_holdings': missing_holdings,
         })
     except Exception as e:
         logger.exception("api_upload_screenshot failed")
@@ -755,20 +851,16 @@ def api_confirm_upload(request):
                     record_holding_change(holding, old_data=None, source='ocr')
                     created_count += 1
 
-            # Auto-remove holdings that disappeared from OCR results for this platform
-            auto_remove = data.get('auto_remove_missing', False)
-            if auto_remove and platform:
-                ocr_names = {item['name'] for item in items}
-                missing = Holding.objects.filter(
-                    platform=platform, source='screenshot',
-                ).exclude(name__in=ocr_names)
-                removed_count = 0
-                for h in missing:
-                    record_holding_removal(h, source='ocr')
-                    h.delete()
-                    removed_count += 1
-            else:
-                removed_count = 0
+            # Process holdings explicitly marked as sold by the user
+            missing_sold_ids = data.get('missing_sold_ids', [])
+            removed_count = 0
+            if missing_sold_ids:
+                for h_id in missing_sold_ids:
+                    h = Holding.objects.filter(id=h_id).first()
+                    if h:
+                        record_holding_removal(h, source='ocr')
+                        h.delete()
+                        removed_count += 1
 
         result = {'success': True, 'created': created_count, 'updated': updated_count}
         if removed_count:
@@ -1308,6 +1400,23 @@ def api_asset_evaluate(request):
 
 
 @require_POST
+def api_history_summary(request):
+    """请求大模型对历史快照进行总结"""
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError:
+        data = {}
+    purpose = data.get('purpose', 'advisor')
+    
+    from .services.advisor import generate_history_summary
+    result = generate_history_summary(purpose=purpose)
+    if result.get('success'):
+        return JsonResponse({'success': True, 'summary': result['data']})
+    else:
+        return JsonResponse({'success': False, 'error': result.get('error', '未知错误')}, status=400)
+
+
+@require_POST
 def api_test_llm(request):
     """测试 LLM 连接"""
     import httpx
@@ -1690,6 +1799,17 @@ def api_alert_dismiss(request):
                 dismissed = {}
             dismissed[layer_name] = timezone.now().isoformat()
             Setting.set('dismissed_deviation_alerts', json.dumps(dismissed, ensure_ascii=False))
+            return JsonResponse({'success': True})
+
+        cashflow_key = data.get('cashflow_key')
+        if cashflow_key:
+            raw = Setting.get('dismissed_cashflow_alerts', '{}')
+            try:
+                dismissed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                dismissed = {}
+            dismissed[cashflow_key] = timezone.now().isoformat()
+            Setting.set('dismissed_cashflow_alerts', json.dumps(dismissed, ensure_ascii=False))
             return JsonResponse({'success': True})
 
         if holding_id and alert_type:

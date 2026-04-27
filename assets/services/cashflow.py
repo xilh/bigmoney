@@ -8,9 +8,10 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 
+import json
 from django.db.models import Sum, Q
 
-from ..models import Snapshot, Transaction, Holding
+from ..models import Snapshot, Transaction, Holding, Setting
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,13 @@ def analyze_portfolio_flows():
         'total_realized_pnl': total_realized,
     }
 
+    # 加载已忽略的预警
+    raw_dismissed = Setting.get('dismissed_cashflow_alerts', '{}')
+    try:
+        dismissed_alerts = json.loads(raw_dismissed)
+    except (json.JSONDecodeError, TypeError):
+        dismissed_alerts = {}
+
     # --- 初始缺口检测 ---
     # 首张快照的总资产远大于已记录的转入总额时，提示补录初始投入
     initial_gap = None
@@ -73,17 +81,21 @@ def analyze_portfolio_flows():
         ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
         gap = first_val - pre_transfers
         if gap > 500:  # 超过 ¥500 视为有缺口
-            initial_gap = {
-                'date': first_date.isoformat(),
-                'snapshot_value': float(first_val),
-                'recorded_transfers': float(pre_transfers),
-                'gap': float(gap),
-            }
+            gap_key = f"initial_{first_date.isoformat()}"
+            if gap_key not in dismissed_alerts:
+                initial_gap = {
+                    'date': first_date.isoformat(),
+                    'snapshot_value': float(first_val),
+                    'recorded_transfers': float(pre_transfers),
+                    'gap': float(gap),
+                    'key': gap_key,
+                }
 
     summary['initial_gap'] = initial_gap
 
     # --- 逐期分析（相邻快照之间） ---
-    periods = _analyze_periods(snapshots)
+    all_periods = _analyze_periods(snapshots)
+    periods = [p for p in all_periods if p['end_date'] not in dismissed_alerts]
 
     # --- 近期交易（最新 50 条） ---
     recent_txs = list(

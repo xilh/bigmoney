@@ -61,7 +61,7 @@
                 {% endfor %}
             </datalist>
             <span class="text-xs text-muted">（AI 自动识别，可修改）</span>
-            <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:0.78rem;margin-left:8px;cursor:pointer;" title="勾选后，该平台下不在识别结果中的已有持仓将被自动清除并记录卖出交易"><input type="checkbox" id="autoRemoveMissing"> 清除消失持仓</label>
+
         </div>
         <div class="table-wrapper">
             <table id="resultsTable">
@@ -82,6 +82,11 @@
                 </thead>
                 <tbody id="resultsBody"></tbody>
             </table>
+        </div>
+        <div id="missingHoldingsContainer" class="hidden" style="margin-top: 16px; padding: 16px; background: rgba(239,68,68,0.05); border: 1px solid rgba(239,68,68,0.2); border-radius: 8px;">
+            <div style="color: var(--color-danger); font-weight: 600; margin-bottom: 8px; font-size: 0.95rem;">⚠️ 未识别到的已有持仓（是否已卖出？）</div>
+            <div class="text-sm text-muted" style="margin-bottom: 12px;">以下资产存在于您的当前记录中，但在本次上传的截图中未能找到。如果您已将其卖出/清仓，请勾选确认。</div>
+            <div id="missingHoldingsList" style="display: flex; flex-direction: column; gap: 8px;"></div>
         </div>
     </div>
 </div>
@@ -231,7 +236,8 @@ async function startUploadQueue() {
                     file: file,
                     upload_id: result.upload_id,
                     platform: result.platform || '',
-                    data: result.data
+                    data: result.data,
+                    missing_holdings: result.missing_holdings || []
                 });
                 addLog(`⏳ 图片 ${file.name} 识别成功，等待复核`);
                 // Update the counter on the results card if reviewing
@@ -276,14 +282,14 @@ function showNextConfirmation() {
     document.getElementById('detectedPlatform').value = currentItem.platform;
     document.getElementById('resultCardTitle').textContent = `✅ 识别结果 - ${currentFile.name} (剩余 ${pendingConfirmations.length} 张待确认)`;
 
-    renderResults(currentItem.data);
+    renderResults(currentItem.data, currentItem.missing_holdings || []);
     resultsCard.classList.remove('hidden');
 }
 
 // Re-render when platform changes, since it affects new/existing matching
 document.getElementById('detectedPlatform').addEventListener('change', function() {
     if (pendingConfirmations.length > 0) {
-        renderResults(pendingConfirmations[0].data);
+        renderResults(pendingConfirmations[0].data, pendingConfirmations[0].missing_holdings || []);
     }
 });
 
@@ -309,7 +315,7 @@ function uploadFile(file) {
     });
 }
 
-function renderResults(items) {
+function renderResults(items, missingHoldings = []) {
     resultsCard.classList.remove('hidden');
     resultsBody.innerHTML = '';
 
@@ -374,6 +380,26 @@ function renderResults(items) {
         tr.dataset.index = idx;
         resultsBody.appendChild(tr);
     });
+
+    const missingContainer = document.getElementById('missingHoldingsContainer');
+    const missingList = document.getElementById('missingHoldingsList');
+    missingList.innerHTML = '';
+    if (missingHoldings && missingHoldings.length > 0) {
+        missingContainer.classList.remove('hidden');
+        missingHoldings.forEach(mh => {
+            const row = document.createElement('label');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '8px';
+            row.style.cursor = 'pointer';
+            row.innerHTML = `<input type="checkbox" class="missing-check" value="${mh.id}" checked>
+                <strong>${mh.name}</strong> 
+                <span class="text-sm text-muted">当前市值: ¥${mh.market_value} / 数量: ${mh.quantity}</span>`;
+            missingList.appendChild(row);
+        });
+    } else {
+        missingContainer.classList.add('hidden');
+    }
 }
 
 function toggleAllRows(masterCheckbox) {
@@ -412,6 +438,11 @@ function confirmCurrent() {
     confirmBtn.disabled = true;
     confirmBtn.textContent = "录入中...";
 
+    const missingSoldIds = [];
+    document.querySelectorAll('.missing-check:checked').forEach(cb => {
+        missingSoldIds.push(parseInt(cb.value));
+    });
+
     fetch('{% url "assets:api_confirm_upload" %}', {
         method: 'POST',
         headers: {
@@ -422,7 +453,7 @@ function confirmCurrent() {
             upload_id: currentUploadId,
             platform: document.getElementById('detectedPlatform').value,
             items: items,
-            auto_remove_missing: document.getElementById('autoRemoveMissing').checked,
+            missing_sold_ids: missingSoldIds,
         }),
     })
     .then(r => r.json())

@@ -98,6 +98,7 @@
                         <td>
                             <div class="btn-group">
                                 <button class="btn btn-sm btn-secondary" onclick="openEditModal({{ h.id }}, '{{ h.name|escapejs }}', '{{ h.code }}', '{{ h.asset_type }}', {{ h.quantity }}, {{ h.cost_price|default:'null' }}, {{ h.current_price|default:'null' }}, {{ h.market_value }}, {{ layer.id }}, '{{ h.notes|escapejs }}', '{{ h.platform|escapejs }}')">编辑</button>
+                                <button class="btn btn-sm btn-warning" style="background:var(--color-warning);color:var(--color-bg);border:none;" onclick="openSellModal({{ h.id }}, '{{ h.name|escapejs }}', {{ h.quantity }})">卖出</button>
                                 <button class="btn btn-sm btn-danger" onclick="deleteHolding({{ h.id }})">删除</button>
                             </div>
                         </td>

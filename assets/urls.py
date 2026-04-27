@@ -37,6 +37,7 @@ urlpatterns = [
     path('api/transaction/<int:tx_id>/delete/', _protected(views.api_transaction_delete), name='api_transaction_delete'),
     path('api/holding/<int:holding_id>/update/', _protected(views.api_holding_update), name='api_holding_update'),
     path('api/holding/<int:holding_id>/delete/', _protected(views.api_holding_delete), name='api_holding_delete'),
+    path('api/holding/<int:holding_id>/sell/', _protected(views.api_holding_sell), name='api_holding_sell'),
     path('api/upload/', _protected(views.api_upload_screenshot), name='api_upload'),
     path('api/upload/confirm/', _protected(views.api_confirm_upload), name='api_confirm_upload'),
     path('api/snapshot/create/', _protected(views.api_snapshot_create), name='api_snapshot_create'),
@@ -53,4 +54,5 @@ urlpatterns = [
     path('api/test-llm/', _protected(views.api_test_llm), name='api_test_llm'),
     path('api/cashflow/confirm/', _protected(views.api_cashflow_confirm), name='api_cashflow_confirm'),
     path('api/alert/dismiss/', _protected(views.api_alert_dismiss), name='api_alert_dismiss'),
+    path('api/history/summary/', _protected(views.api_history_summary), name='api_history_summary'),
 ]

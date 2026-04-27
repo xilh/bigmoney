@@ -16,7 +16,7 @@
     <div class="card-body" style="padding: 0;">
         <table class="table">
             <thead><tr>
-                <th>名称</th><th>层级</th><th>平台</th><th>市值</th><th>盈亏</th><th>盈亏%</th>
+                <th>名称</th><th>层级</th><th>平台</th><th>市值</th><th>盈亏</th><th>盈亏%</th><th>操作</th>
             </tr></thead>
             <tbody>
             {% for h in current_holdings %}
@@ -34,9 +34,12 @@
                 <td class="font-mono {% if h.profit_loss_pct >= 0 %}text-success{% else %}text-danger{% endif %}">
                     {% if h.profit_loss_pct >= 0 %}+{% endif %}{{ h.profit_loss_pct|floatformat:2 }}%
                 </td>
+                <td>
+                    <button class="btn btn-sm btn-warning" style="background:var(--color-warning);color:var(--color-bg);border:none;" onclick="event.stopPropagation(); openSellModal({{ h.id }}, '{{ h.name|escapejs }}', {{ h.quantity|default:0 }})">卖出</button>
+                </td>
             </tr>
             {% empty %}
-            <tr><td colspan="6" class="text-center text-muted" style="padding:24px;">暂无持仓</td></tr>
+            <tr><td colspan="7" class="text-center text-muted" style="padding:24px;">暂无持仓</td></tr>
             {% endfor %}
             </tbody>
         </table>
