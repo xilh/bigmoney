@@ -1173,8 +1173,17 @@ def api_advisor_recommend_assets(request):
             
         current_holdings = list(Holding.objects.filter(layer=layer).values('name', 'market_value'))
         
+        all_holdings = Holding.objects.select_related('layer').all()
+        portfolio_summary = []
+        for h in all_holdings:
+            portfolio_summary.append({
+                "name": h.name,
+                "layer": h.layer.name if h.layer else "未知",
+                "value": float(h.market_value)
+            })
+        
         from .services.advisor import search_and_recommend_assets
-        result = search_and_recommend_assets(layer_name, buy_amount, current_holdings)
+        result = search_and_recommend_assets(layer_name, buy_amount, current_holdings, portfolio_summary)
         
         return JsonResponse(result)
     except Exception as e:

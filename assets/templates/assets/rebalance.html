@@ -296,32 +296,62 @@ function recommendAssets(btn, layerName, buyAmount) {
         btn.innerHTML = '🤖 重新寻宝';
         
         if (res.success && res.data) {
-            let html = '<h4 style="margin:0 0 12px 0; font-size:0.95rem; color:var(--color-text); display:flex; align-items:center; gap:6px;">✨ AI 护航选股 <span class="badge badge-success" style="font-size: 0.65rem;">避险策略</span></h4>';
+            let html = '<div style="background:var(--color-surface); border:1px solid rgba(66, 133, 244, 0.3); border-radius:var(--border-radius); padding:16px;">';
+            html += '<h4 style="margin:0 0 16px 0; font-size:1.05rem; color:var(--color-primary); display:flex; align-items:center; gap:8px;">✨ AI 智能建仓向导</h4>';
+            
+            if (res.data.macro_analysis) {
+                html += `<div style="margin-bottom: 16px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: var(--border-radius-sm); border-left: 3px solid var(--color-accent);">
+                    <div style="font-size:0.75rem; color:var(--color-text-muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;">🌐 宏观视界 Macro Outlook</div>
+                    <div style="font-size:0.85rem; color:var(--color-text-secondary); line-height:1.6;">${res.data.macro_analysis}</div>
+                </div>`;
+            }
+            
             if (res.data.recommendations && res.data.recommendations.length > 0) {
-                html += '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom: 12px;">';
+                html += '<div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 16px;">';
                 res.data.recommendations.forEach(r => {
                     const riskCls = r.risk_level === 'low' ? 'text-success' : (r.risk_level === 'medium' ? 'text-warning' : 'text-danger');
+                    const conv = r.conviction_score || 0;
+                    const convColor = conv > 80 ? 'var(--color-success)' : (conv > 60 ? 'var(--color-warning)' : 'var(--color-danger)');
+
                     html += `
-                        <div style="background:var(--color-background); border:1px solid var(--color-border); border-radius:var(--border-radius-sm); padding:10px;">
-                            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+                        <div style="background:var(--color-bg-tertiary); border:1px solid var(--color-border); border-radius:var(--border-radius-sm); padding:14px; position:relative; overflow:hidden;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
                                 <div>
-                                    <strong style="color:var(--color-text);">${r.name}</strong>
-                                    ${r.code ? `<span style="font-size:0.8rem; color:var(--color-text-muted); font-family:monospace; margin-left:4px;">${r.code}</span>` : ''}
+                                    <strong style="color:var(--color-text); font-size:1rem;">${r.name}</strong>
+                                    ${r.code ? `<span style="font-size:0.8rem; color:var(--color-text-muted); font-family:monospace; margin-left:6px; background:rgba(255,255,255,0.05); padding:2px 6px; border-radius:4px;">${r.code}</span>` : ''}
                                 </div>
-                                <div style="display:flex; gap:4px; align-items:center;">
+                                <div style="display:flex; gap:6px; align-items:center;">
                                     <span class="badge badge-neutral" style="font-size:0.7rem;">${r.type}</span>
                                     <span class="${riskCls}" style="font-size:0.7rem; font-weight:600;">[${r.risk_level}]</span>
                                 </div>
                             </div>
-                            <div style="font-size:0.85rem; color:var(--color-text-secondary); line-height:1.5;">${r.rationale}</div>
+                            
+                            <div style="font-size:0.85rem; color:var(--color-text); line-height:1.5; margin-bottom:12px;"><strong>核心逻辑：</strong>${r.rationale}</div>
+                            
+                            <div style="display:grid; grid-template-columns: 1fr; gap:8px; font-size:0.8rem; margin-bottom:4px;">
+                                <div style="background:rgba(239, 68, 68, 0.05); border:1px solid rgba(239, 68, 68, 0.1); padding:8px 10px; border-radius:6px; display:flex; gap:8px;">
+                                    <span style="flex-shrink:0;">📉</span>
+                                    <div><strong style="color:var(--color-text-muted); font-size:0.75rem;">最大回撤预期</strong><br><span style="color:var(--color-text-secondary);">${r.downside_risk || '暂无估算'}</span></div>
+                                </div>
+                                <div style="background:rgba(56, 189, 248, 0.05); border:1px solid rgba(56, 189, 248, 0.1); padding:8px 10px; border-radius:6px; display:flex; gap:8px;">
+                                    <span style="flex-shrink:0;">⚔️</span>
+                                    <div><strong style="color:var(--color-text-muted); font-size:0.75rem;">建仓策略</strong><br><span style="color:var(--color-text-secondary);">${r.execution_strategy || '未提供建仓策略'}</span></div>
+                                </div>
+                            </div>
+                            
+                            <div style="position:absolute; bottom:0; right:0; padding:4px 8px; font-size:0.7rem; font-weight:700; color:${convColor}; background:rgba(255,255,255,0.03); border-top-left-radius:8px;">
+                                信心指数: ${conv}
+                            </div>
                         </div>
                     `;
                 });
                 html += '</div>';
             }
-            if (res.data.advice) {
-                html += `<div style="font-size: 0.85rem; color:var(--color-primary); background:rgba(var(--color-primary-rgb), 0.1); padding: 10px; border-radius: var(--border-radius-sm); border-left: 3px solid var(--color-primary);"><strong>策略指引:</strong> ${res.data.advice}</div>`;
+            if (res.data.allocation_advice || res.data.advice) {
+                const adv = res.data.allocation_advice || res.data.advice;
+                html += `<div style="font-size: 0.85rem; color:var(--color-primary); background:rgba(66, 133, 244, 0.08); padding: 12px; border-radius: var(--border-radius-sm); border-left: 3px solid var(--color-primary);"><strong>配置指引:</strong> ${adv}</div>`;
             }
+            html += '</div>';
             container.innerHTML = html;
         } else {
             container.innerHTML = `<div class="text-danger" style="font-size: 0.85rem; background:rgba(239,68,68,0.1); padding:10px; border-radius:var(--border-radius-sm);">❌ ${res.error || '获取建议失败，请检查 LLM 配置是否有效'}</div>`;

@@ -1,0 +1,8 @@
+[2026-04-21 22:38:53,121] INFO assets.services.ledger: Auto buy tx #4: 华泰柏瑞沪深300ETF联接A qty=0.0000 amount=2502.76
+[2026-04-21 22:39:18,647] INFO assets.services.ledger: Auto buy tx #5: 黄金ETF华安 qty=1000.0000 amount=10063.00
+[2026-04-21 22:39:18,652] INFO assets.services.ledger: Auto buy tx #6: 沪深300ETF华... qty=2200.0000 amount=10155.20
+[2026-04-27 23:40:51,119] INFO assets.services.ledger: Auto buy tx #7: 招银理财日日金100号A qty=0.0000 amount=0.00
+[2026-04-27 23:41:09,117] INFO assets.services.ledger: Auto buy tx #8: 中证A500ETF... qty=15900.0000 amount=20097.60
+[2026-04-27 23:41:09,120] INFO assets.services.ledger: Auto buy tx #9: 沪深300ETF华... qty=4300.0000 amount=20085.30
+[2026-04-27 23:41:09,121] INFO assets.services.ledger: Auto buy tx #10: 黄金ETF华安 qty=4800.0000 amount=47846.40
+[2026-04-27 23:41:09,124] INFO assets.services.ledger: Auto buy tx #11: 福耀玻璃 qty=200.0000 amount=11710.20

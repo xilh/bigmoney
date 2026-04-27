@@ -6,6 +6,7 @@ AI 投资顾问服务
 import json
 import logging
 import time
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -119,38 +120,37 @@ ASSET_EVAL_PROMPT = """你是一位专业的个人投资顾问（CFA 持证）�
 """
 
 
-ASSET_SEARCH_PROMPT = """你是一位专业的个人投资顾问（CFA 持证），正在为客户寻找优质的投资标的以进行再平衡配置。
-客户目前需要向特定的投资层级分配资金。请根据该层级的投资属性，推荐 2-3 个具体且优质的资产（如 ETF、公募基金、股票或特定债券等）。
+ASSET_SEARCH_PROMPT = """你是一位顶级的宏观策略分析师与个人财富顾问（CFA 持证专家）。
+结合当下的真实宏观市场环境以及客户的整个资产组合配置，请为客户推荐用来再平衡的优质标的，并提供完整的投资执行策略。
 
-## 投资原则（必须遵守）
-客户采用五层资产配置体系（安全垫/债券核心/股票核心/另类对冲/卫星机会），每层有目标配比。
-- 绝不推荐带有高杠杆、P2P 或无牌照的高风险资产。
-- **5% 单票上限机制**：推荐单只股票时，说明仓位不应超过总资产的 5%。
-- 推荐须契合该层级的定位：
+## 投资原则（必须严格遵守）
+客户采用五层资产配置体系（安全垫/债券核心/股票核心/另类对冲/卫星机会）。
+- **极度厌恶风险与雷区**：绝不推荐带有高杠杆、P2P、ST股或底层资产不透明的问题资产。
+- **5% 单票上限红线**：若推荐单只股票或高波动资产，务必在策略中强调初始仓位不能超过总资产比例的 5%。如果客户当前总组合已经超配某一行业，必须尽量避免推荐相关性高的资产以分散风险。
+- **允许加仓优质标的**：你既可以推荐客户未持有的优质新资产，也可以直接推荐加仓其当前已持有的资产（前提是它在当前宏观环境下仍是极佳选择，且不违反单票上限）。
+- **层级相符**：
   - 第一层（安全垫/干火药）：以货币基金、短债基金为主，要求极度安全、高流动性。
   - 第二层（债券核心）：以纯债基金、利率债或高等级信用债为主，提供稳定生息。
-  - 第三层（股票核心）：以宽基指数ETF（如沪深300、标普500、纳指100）或长期绩优的红利底仓为主。
-  - 第四层（另类/对冲）：如黄金ETF、资源类、或者与其他底层相关性低的资产。
-  - 第五层（卫星机会）：高赔率、高弹性的行业主题、个股等，或成长性板块。
+  - 第三层（股票核心）：以宽基指数ETF为主（如沪深300、标普500、纳指100）或长期稳定高分红。
+  - 第四层（另类/对冲）：如黄金ETF、资源类、或者与股市相关度极低的资产，抵抗周期。
+  - 第五层（卫星机会）：提供高赔率、高弹性的行业主题、个股等，接受较大波动。
 
-## 你获得的信息
-- **目标层级名称**：客户希望补仓的层级。
-- **配置金额**：计划投入的金额。
-- **当前该层持仓**：客户目前在该层已持有的资产。为了分散风险，你应该优先推荐未被持有的优质资产。
-
-## 输出格式
-请返回纯 JSON（不要 markdown 代码块），格式如下：
+## 输出格式 (必须为纯 JSON，勿带 Markdown ``` json 包裹)
 {
+  "macro_analysis": "（必填）基于[Today's Date]前后的全球宏观或中国宏观经济周期、利率环境与预期，仅用简练的 2-4 句话分析当前为何这层资产值得买入。",
   "recommendations": [
     {
-      "name": "资产名称 (如 沪深300ETF)",
-      "code": "代码 (如 510300.SH)",
-      "type": "资产属类 (如 ETF/股票)",
-      "rationale": "推荐理由，结合层级属性和投资逻辑 (约 2-3 句话)",
-      "risk_level": "low|medium|high|critical"
+      "name": "资产名称 (如 标普500ETF)",
+      "code": "代码 (如 513500.SH)",
+      "type": "资产属类 (如 跨境ETF)",
+      "rationale": "核心推荐逻辑，直击要害 (约 2-3 句话)",
+      "downside_risk": "该资产如果遇到最差情况，预期的最大回撤幅度是多少，什么情况下会发生暴跌？",
+      "execution_strategy": "建仓策略：例如『当价格回调至 XX 以下时分 3 个月定投建仓』或『底层资产较为稳健，可一笔买入』。",
+      "risk_level": "low|medium|high|critical",
+      "conviction_score": 整数值 (1-100之间，代表你对这个标的在当前宏观下的信心分)
     }
   ],
-  "advice": "针对此层补仓配置的整体投资建议 (约 50-100 字)"
+  "allocation_advice": "针对这笔具体资金（配置金额）应当如何划分在上述推荐标的上，给出一句综合配置建议。"
 }
 """
 
@@ -233,7 +233,7 @@ def evaluate_asset(asset_info, transactions, value_history,
         return {'success': False, 'data': None, 'error': str(e)}
 
 
-def search_and_recommend_assets(layer_name, buy_amount, current_holdings):
+def search_and_recommend_assets(layer_name, buy_amount, current_holdings, portfolio_summary=None):
     """
     调用大模型为指定层级推荐资产。
     
@@ -241,17 +241,34 @@ def search_and_recommend_assets(layer_name, buy_amount, current_holdings):
         layer_name: 目标层级名称
         buy_amount: 计划买入金额
         current_holdings: list of dict, 当前该层已持有资产信息
+        portfolio_summary: list of dict, 全盘资产概览
         
     Returns:
         dict: {success: bool, data: {...}, error: str}
     """
     config = _get_advisor_config()
+    today_str = date.today().isoformat()
     
     holdings_text = "该层暂无持仓"
     if current_holdings:
         holdings_text = ", ".join(f"{h.get('name')} (市值: ¥{float(h.get('market_value', 0)):,.0f})" for h in current_holdings)
         
-    user_message = f"目标层级: {layer_name}\n计划买入金额: ¥{float(buy_amount):,.0f}\n当前该层已持有资产: {holdings_text}\n\n请推荐 2-3 个符合该层级属性的优质资产组合标的。"
+    portfolio_text = "未提供全盘持仓"
+    if portfolio_summary:
+        limit = 15
+        top_holdings = sorted(portfolio_summary, key=lambda x: x.get('value', 0), reverse=True)[:limit]
+        p_list = [f"{h['name']}({h['layer']}, ¥{h['value']:,.0f})" for h in top_holdings]
+        portfolio_text = "前几大持股占比分布: " + ", ".join(p_list) + f"等{len(portfolio_summary)}个资产。"
+        
+    user_message = (
+        f"今天是 {today_str}。请以当前的宏观环境进行严肃分析。\n\n"
+        f"客户总体投资组合概况 (防止超配): {portfolio_text}\n"
+        f"本次目标配置层级: {layer_name}\n"
+        f"计划投入金额: ¥{float(buy_amount):,.0f}\n"
+        f"当前在 {layer_name} 层已持有资产: {holdings_text}\n\n"
+        f"请按照前述输出格式推荐2-3个顶级标的。你可以推荐未持有的新资产，也完全可以建议加仓上述【当前已持有资产】（如果它们依然是最优选择）。"
+        f"务必充分考虑客户在全组合中是否过度集中于特定风险。"
+    )
     
     try:
         if config['provider'] == 'anthropic':
