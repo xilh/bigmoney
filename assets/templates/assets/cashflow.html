@@ -32,6 +32,13 @@
         </div>
         <div class="stat-sub">来自卖出交易</div>
     </div>
+    <div class="stat-card card-compact" title="推测差额（净投入 + 实际总收益 - 当前市值）。正数表示可能有未记录的流出/消费">
+        <div class="stat-label">未记录消费/差额</div>
+        <div class="stat-value {% if summary.total_consumption > 0 %}text-warning{% else %}text-muted{% endif %}">
+            ¥{{ summary.total_consumption|floatformat:0 }}
+        </div>
+        <div class="stat-sub">基于资产差值倒推</div>
+    </div>
 </div>
 
 <!-- Charts Row -->
@@ -108,8 +115,54 @@
 {% endfor %}
 {% endif %}
 
+<!-- Snapshot Periods (Consumption Deduction) -->
+{% if all_periods %}
+<div class="card animate-in stagger-3" style="margin-bottom: 12px;">
+    <div class="card-header" style="padding: 10px 16px;">
+        <h3>快照周期分析与推算</h3>
+        <span class="text-xs text-muted">基于单次快照对比的真实收益与差额消耗</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="table" style="font-size: 0.9rem;">
+            <thead><tr>
+                <th>周期</th>
+                <th class="text-right">资产变动</th>
+                <th class="text-right">净资金流(转入-转出)</th>
+                <th class="text-right">投资收益</th>
+                <th class="text-right">推算差额(消费)</th>
+            </tr></thead>
+            <tbody>
+            {% for p in all_periods %}
+            <tr>
+                <td style="white-space:nowrap;" class="text-xs text-muted">{{ p.start_date|slice:"5:" }} 至 {{ p.end_date|slice:"5:" }}</td>
+                <td class="text-right font-mono {% if p.value_change >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if p.value_change >= 0 %}+{% endif %}¥{{ p.value_change|floatformat:0 }}
+                </td>
+                <td class="text-right font-mono text-muted">
+                    {% if p.net_flow > 0 %}+{% endif %}¥{{ p.net_flow|floatformat:0 }}
+                </td>
+                <td class="text-right font-mono {% if p.estimated_return >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if p.estimated_return >= 0 %}+{% endif %}¥{{ p.estimated_return|floatformat:0 }}
+                </td>
+                <td class="text-right font-mono {% if p.consumption > 0 %}text-warning{% elif p.consumption < 0 %}text-info{% else %}text-muted{% endif %}">
+                    {% if p.consumption > 0 %}
+                        <span title="未记录的流出/消费">¥{{ p.consumption|floatformat:0 }}</span>
+                    {% elif p.consumption < 0 %}
+                        <span title="未记录的流入/收入">¥{{ p.consumption|floatformat:0 }}</span>
+                    {% else %}
+                        ¥0
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 <!-- Recent Transactions -->
-<div class="card animate-in stagger-3">
+<div class="card animate-in stagger-4">
     <div class="card-header" style="padding: 10px 16px;">
         <h3>交易记录</h3>
         <span class="text-xs text-muted">自动记录的买卖与资金流动</span>
@@ -263,6 +316,7 @@ if (monthlyData.length) {
                 {label: '买入', data: monthlyData.map(d => d.buy), backgroundColor: 'rgba(59, 130, 246, 0.5)'},
                 {label: '卖出', data: monthlyData.map(d => -d.sell), backgroundColor: 'rgba(239, 68, 68, 0.5)'},
                 {label: '转出', data: monthlyData.map(d => -d.withdraw), backgroundColor: 'rgba(249, 115, 22, 0.7)'},
+                {label: '推算差额', data: monthlyData.map(d => -d.consumption), backgroundColor: 'rgba(168, 85, 247, 0.7)'},
             ]
         },
         options: {

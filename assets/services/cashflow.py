@@ -30,7 +30,7 @@ def analyze_portfolio_flows():
     """
     snapshots = list(
         Snapshot.objects.order_by('date', 'id')
-        .values('id', 'date', 'total_value')
+        .values('id', 'date', 'total_value', 'holdings_data')
     )
 
     # --- 汇总统计 ---
@@ -44,19 +44,30 @@ def analyze_portfolio_flows():
 
     current_value = Holding.objects.aggregate(
         t=Sum('market_value'))['t'] or Decimal('0')
-    total_return = current_value - net_contribution
-    return_rate = float(total_return / net_contribution * 100) if net_contribution > 0 else 0.0
+    
+    current_profit = Holding.objects.aggregate(
+        t=Sum('profit_loss'))['t'] or Decimal('0')
 
     total_realized = Transaction.objects.filter(
         action='sell', realized_pnl__isnull=False,
     ).aggregate(t=Sum('realized_pnl'))['t'] or Decimal('0')
+
+    total_dividends = Transaction.objects.filter(
+        action='dividend'
+    ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+
+    actual_investment_return = current_profit + total_realized + total_dividends
+    total_consumption = net_contribution + actual_investment_return - current_value
+    
+    return_rate = float(actual_investment_return / net_contribution * 100) if net_contribution > 0 else 0.0
 
     summary = {
         'current_value': current_value,
         'net_contribution': net_contribution,
         'total_transfers': total_transfers,
         'total_withdrawals': total_withdrawals,
-        'total_return': total_return,
+        'total_return': actual_investment_return,
+        'total_consumption': total_consumption,
         'return_rate': return_rate,
         'total_realized_pnl': total_realized,
     }
@@ -113,7 +124,7 @@ def analyze_portfolio_flows():
         tx['realized_pnl'] = float(tx['realized_pnl']) if tx['realized_pnl'] else None
 
     # --- 月度图表数据 ---
-    monthly_chart = _build_monthly_chart()
+    monthly_chart = _build_monthly_chart(all_periods)
 
     # --- 按操作类型汇总 ---
     action_chart = _build_action_chart()
@@ -121,6 +132,7 @@ def analyze_portfolio_flows():
     return {
         'summary': summary,
         'periods': periods,
+        'all_periods': all_periods,
         'recent_transactions': recent_txs,
         'monthly_chart': monthly_chart,
         'action_chart': action_chart,
@@ -162,8 +174,26 @@ def _analyze_periods(snapshots):
             date__gt=start_date, date__lte=end_date, action='sell',
         ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
 
-        # 推算投资收益 = 资产变动 - 净资金流入
-        estimated_return = value_change - net_flow
+        s1_holdings = s1.get('holdings_data', [])
+        s2_holdings = s2.get('holdings_data', [])
+        
+        if s1_holdings and s2_holdings:
+            s1_profit = sum(Decimal(str(item.get('profit_loss', '0'))) for item in s1_holdings)
+            s2_profit = sum(Decimal(str(item.get('profit_loss', '0'))) for item in s2_holdings)
+            
+            realized_pnl = Transaction.objects.filter(
+                date__gt=start_date, date__lte=end_date, action='sell'
+            ).aggregate(t=Sum('realized_pnl'))['t'] or Decimal('0')
+            
+            dividend_amount = Transaction.objects.filter(
+                date__gt=start_date, date__lte=end_date, action='dividend'
+            ).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+            
+            actual_return = (s2_profit - s1_profit) + realized_pnl + dividend_amount
+            consumption = net_flow + actual_return - value_change
+        else:
+            actual_return = value_change - net_flow
+            consumption = Decimal('0')
 
         # 推算未记录的资金流：
         # 如果有大量买入但没有对应的转入记录，说明可能有未记录的转入
@@ -181,7 +211,8 @@ def _analyze_periods(snapshots):
             'net_flow': float(net_flow),
             'buys': float(buys),
             'sells': float(sells),
-            'estimated_return': float(estimated_return),
+            'estimated_return': float(actual_return),
+            'consumption': float(consumption),
             'unreconciled': float(unreconciled),
         })
 
@@ -189,7 +220,7 @@ def _analyze_periods(snapshots):
     return list(reversed(periods[-12:]))
 
 
-def _build_monthly_chart():
+def _build_monthly_chart(periods):
     """按月汇总资金流向，用于柱状图。"""
     # 取最近 6 个月的交易数据
     six_months_ago = date.today().replace(day=1) - timedelta(days=180)
@@ -198,12 +229,20 @@ def _build_monthly_chart():
     monthly = defaultdict(lambda: {
         'transfer': Decimal('0'), 'withdraw': Decimal('0'),
         'buy': Decimal('0'), 'sell': Decimal('0'),
+        'consumption': Decimal('0'),
     })
 
     for tx in txs.values('action', 'amount', 'date'):
         month_key = tx['date'].strftime('%Y-%m')
         if tx['action'] in monthly[month_key]:
             monthly[month_key][tx['action']] += tx['amount']
+
+    # 把期间消费归结到结束日期所在的月份
+    six_months_ago_str = six_months_ago.strftime('%Y-%m')
+    for p in periods:
+        month_key = p['end_date'][:7]
+        if month_key >= six_months_ago_str:
+            monthly[month_key]['consumption'] += Decimal(str(p['consumption']))
 
     result = []
     for month_key in sorted(monthly.keys()):
@@ -214,6 +253,7 @@ def _build_monthly_chart():
             'withdraw': float(d['withdraw']),
             'buy': float(d['buy']),
             'sell': float(d['sell']),
+            'consumption': float(d['consumption']),
         })
     return result
 

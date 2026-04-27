@@ -1742,6 +1742,7 @@ def cashflow_page(request):
     context = {
         'summary': analysis['summary'],
         'periods': analysis['periods'],
+        'all_periods': analysis.get('all_periods', analysis['periods']),
         'recent_transactions': analysis['recent_transactions'],
         'monthly_json': json.dumps(analysis['monthly_chart'], cls=DecimalEncoder, ensure_ascii=False),
         'action_json': json.dumps(analysis['action_chart'], cls=DecimalEncoder, ensure_ascii=False),
