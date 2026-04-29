@@ -8,7 +8,9 @@ import logging
 from django.conf import settings as django_settings
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
+from django.core.serializers.json import DjangoJSONEncoder
+import csv
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -29,7 +31,7 @@ from .services.advisor import evaluate_portfolio, evaluate_asset
 from .services.ledger import snapshot_holding, record_holding_change, record_holding_removal
 
 
-class DecimalEncoder(json.JSONEncoder):
+class DecimalEncoder(DjangoJSONEncoder):
     """JSON 编码器：将 Decimal 转为 float 以保持前端兼容"""
     def default(self, obj):
         if isinstance(obj, Decimal):
@@ -1075,23 +1077,38 @@ def api_export_data(request):
         'export_date': timezone.now().isoformat(),
         'layers': list(AssetLayer.objects.values()),
         'holdings': list(Holding.objects.values()),
-        'snapshots': [
-            {
-                **{k: v for k, v in s.items() if k != 'date'},
-                'date': s['date'].isoformat(),
-            }
-            for s in Snapshot.objects.values()
-        ],
-        'transactions': [
-            {
-                **{k: v for k, v in t.items() if k != 'date'},
-                'date': t['date'].isoformat(),
-            }
-            for t in Transaction.objects.values()
-        ],
+        'snapshots': list(Snapshot.objects.values()),
+        'transactions': list(Transaction.objects.values()),
     }
     response = JsonResponse(data, encoder=DecimalEncoder, json_dumps_params={'ensure_ascii': False, 'indent': 2})
     response['Content-Disposition'] = f'attachment; filename="bigbill_export_{date.today()}.json"'
+    return response
+
+def api_export_holdings_csv(request):
+    """导出当前持仓为 CSV 格式，方便提交给 AI 分析"""
+    response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+    response['Content-Disposition'] = f'attachment; filename="holdings_export_{date.today()}.csv"'
+    
+    writer = csv.writer(response)
+    writer.writerow(['资产名称', '代码', '所属层级', '资产类型', '数量/份额', '成本价', '当前价', '市值(元)', '盈亏(元)', '盈亏比例(%)', '来源平台', '备注'])
+    
+    holdings = Holding.objects.select_related('layer').all()
+    for h in holdings:
+        asset_type_display = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
+        writer.writerow([
+            h.name,
+            h.code,
+            h.layer.name if h.layer else '',
+            asset_type_display,
+            float(h.quantity) if h.quantity else '',
+            float(h.cost_price) if h.cost_price is not None else '',
+            float(h.current_price) if h.current_price is not None else '',
+            float(h.market_value) if h.market_value else 0.0,
+            float(h.profit_loss) if h.profit_loss else 0.0,
+            float(h.profit_loss_pct) if h.profit_loss_pct else 0.0,
+            h.platform,
+            h.notes
+        ])
     return response
 
 

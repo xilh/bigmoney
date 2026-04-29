@@ -327,8 +327,11 @@
         <div class="grid-2">
             <div>
                 <h4 style="font-size: 0.9rem; margin-bottom: 8px;">导出数据</h4>
-                <p class="text-sm text-muted mb-2">将所有数据导出为 JSON 文件，用于备份或迁移</p>
-                <a href="{% url 'assets:api_export' %}" class="btn btn-secondary" download>📤 导出 JSON</a>
+                <p class="text-sm text-muted mb-2">将所有数据导出为 JSON 文件，或导出当前持仓用于 AI 分析</p>
+                <div class="flex gap-2">
+                    <a href="{% url 'assets:api_export' %}" class="btn btn-secondary" download>📤 导出 JSON</a>
+                    <a href="{% url 'assets:api_export_holdings' %}" class="btn btn-secondary" style="margin-left: 8px;" download>📊 导出持仓 (CSV)</a>
+                </div>
             </div>
             <div>
                 <h4 style="font-size: 0.9rem; margin-bottom: 8px;">导入数据</h4>

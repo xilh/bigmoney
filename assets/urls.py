@@ -46,6 +46,7 @@ urlpatterns = [
     path('api/checklist/complete/', _protected(views.api_checklist_complete), name='api_checklist_complete'),
     path('api/settings/save/', _protected(views.api_settings_save), name='api_settings_save'),
     path('api/export/', _protected(views.api_export_data), name='api_export'),
+    path('api/export-holdings/', _protected(views.api_export_holdings_csv), name='api_export_holdings'),
     path('api/import/', _protected(views.api_import_data), name='api_import'),
     path('api/performance/', _protected(views.api_performance_calc), name='api_performance_calc'),
     path('api/advisor/evaluate/', _protected(views.api_advisor_evaluate), name='api_advisor_evaluate'),
