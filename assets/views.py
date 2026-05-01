@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
     Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES,
-    EvaluationReport, AssetEvaluation,
+    EvaluationReport, AssetEvaluation, SystemBackup
 )
 from .services.ocr import recognize_screenshot
 from .services.rebalance import (
@@ -773,6 +773,33 @@ def api_confirm_upload(request):
         updated_count = 0
 
         with transaction.atomic():
+            # Create auto backup if needed
+            last_auto = SystemBackup.objects.filter(is_auto=True).order_by('-created_at').first()
+            if not last_auto or (timezone.now() - last_auto.created_at).total_seconds() > 600:
+                holdings = Holding.objects.all()
+                backup_data = [{
+                    'layer_id': h.layer_id,
+                    'name': h.name,
+                    'code': h.code,
+                    'asset_type': h.asset_type,
+                    'quantity': float(h.quantity) if h.quantity is not None else 0,
+                    'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+                    'current_price': float(h.current_price) if h.current_price is not None else None,
+                    'market_value': float(h.market_value) if h.market_value is not None else 0,
+                    'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+                    'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+                    'source': h.source,
+                    'platform': h.platform,
+                    'is_reserve': h.is_reserve,
+                    'notes': h.notes,
+                } for h in holdings]
+                SystemBackup.objects.create(name='自动备份 (导入前)', data=backup_data, is_auto=True)
+                
+                # Keep only last 10 auto backups
+                auto_backups = SystemBackup.objects.filter(is_auto=True).order_by('-created_at')[10:]
+                for b in auto_backups:
+                    b.delete()
+
             if upload_id:
                 upload.status = 'confirmed'
                 if platform:
@@ -1152,6 +1179,119 @@ def api_import_data(request):
                         notes=hd.get('notes', ''),
                     )
 
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+def api_backup_list(request):
+    """获取所有备份记录"""
+    backups = SystemBackup.objects.all()
+    data = [{
+        'id': b.id,
+        'name': b.name,
+        'is_auto': b.is_auto,
+        'created_at': timezone.localtime(b.created_at).strftime('%Y-%m-%d %H:%M:%S'),
+        'holdings_count': len(b.data) if b.data else 0
+    } for b in backups]
+    return JsonResponse({'success': True, 'data': data})
+
+
+@require_POST
+def api_backup_create(request):
+    """手动创建系统备份"""
+    try:
+        data = json.loads(request.body) if request.body else {}
+        name = data.get('name') or f"手动备份 {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+        
+        holdings = Holding.objects.all()
+        backup_data = [{
+            'layer_id': h.layer_id,
+            'name': h.name,
+            'code': h.code,
+            'asset_type': h.asset_type,
+            'quantity': float(h.quantity) if h.quantity is not None else 0,
+            'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+            'current_price': float(h.current_price) if h.current_price is not None else None,
+            'market_value': float(h.market_value) if h.market_value is not None else 0,
+            'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+            'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+            'source': h.source,
+            'platform': h.platform,
+            'is_reserve': h.is_reserve,
+            'notes': h.notes,
+        } for h in holdings]
+        
+        backup = SystemBackup.objects.create(name=name, data=backup_data, is_auto=False)
+        return JsonResponse({'success': True, 'id': backup.id})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_POST
+def api_backup_restore(request, backup_id):
+    """从指定备份恢复系统持仓"""
+    try:
+        backup = get_object_or_404(SystemBackup, id=backup_id)
+        with transaction.atomic():
+            # 1. 自动创建一个恢复前的备份，以防万一
+            holdings = Holding.objects.all()
+            backup_data = [{
+                'layer_id': h.layer_id,
+                'name': h.name,
+                'code': h.code,
+                'asset_type': h.asset_type,
+                'quantity': float(h.quantity) if h.quantity is not None else 0,
+                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+                'current_price': float(h.current_price) if h.current_price is not None else None,
+                'market_value': float(h.market_value) if h.market_value is not None else 0,
+                'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+                'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+                'source': h.source,
+                'platform': h.platform,
+                'is_reserve': h.is_reserve,
+                'notes': h.notes,
+            } for h in holdings]
+            SystemBackup.objects.create(name=f"恢复前备份", data=backup_data, is_auto=True)
+
+            # 2. 删除当前所有持仓
+            Holding.objects.all().delete()
+
+            # 3. 恢复备份的持仓
+            restore_holdings = []
+            for item in backup.data:
+                layer_id = item.get('layer_id')
+                layer = AssetLayer.objects.filter(id=layer_id).first() if layer_id else AssetLayer.objects.first()
+                if layer:
+                    restore_holdings.append(Holding(
+                        layer=layer,
+                        name=item.get('name', ''),
+                        code=item.get('code', ''),
+                        asset_type=item.get('asset_type', 'other'),
+                        quantity=item.get('quantity', 0),
+                        cost_price=item.get('cost_price'),
+                        current_price=item.get('current_price'),
+                        market_value=item.get('market_value', 0),
+                        profit_loss=item.get('profit_loss', 0),
+                        profit_loss_pct=item.get('profit_loss_pct', 0),
+                        source=item.get('source', 'manual'),
+                        platform=item.get('platform', ''),
+                        is_reserve=item.get('is_reserve', False),
+                        notes=item.get('notes', ''),
+                    ))
+            Holding.objects.bulk_create(restore_holdings)
+
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_http_methods(["DELETE"])
+def api_backup_delete(request, backup_id):
+    """删除系统备份"""
+    try:
+        backup = get_object_or_404(SystemBackup, id=backup_id)
+        backup.delete()
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)

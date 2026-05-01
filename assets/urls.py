@@ -56,4 +56,8 @@ urlpatterns = [
     path('api/cashflow/confirm/', _protected(views.api_cashflow_confirm), name='api_cashflow_confirm'),
     path('api/alert/dismiss/', _protected(views.api_alert_dismiss), name='api_alert_dismiss'),
     path('api/history/summary/', _protected(views.api_history_summary), name='api_history_summary'),
+    path('api/backup/list/', _protected(views.api_backup_list), name='api_backup_list'),
+    path('api/backup/create/', _protected(views.api_backup_create), name='api_backup_create'),
+    path('api/backup/<int:backup_id>/restore/', _protected(views.api_backup_restore), name='api_backup_restore'),
+    path('api/backup/<int:backup_id>/delete/', _protected(views.api_backup_delete), name='api_backup_delete'),
 ]

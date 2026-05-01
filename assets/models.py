@@ -321,3 +321,19 @@ class AlertAction(models.Model):
 
     def __str__(self):
         return f'{self.holding.name} - {self.alert_type} - {self.get_action_display()}'
+
+class SystemBackup(models.Model):
+    """系统数据备份（用于恢复持仓状态）"""
+    name = models.CharField('备份名称', max_length=100)
+    data = models.JSONField('备份数据')
+    is_auto = models.BooleanField('是否自动备份', default=False)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '系统备份'
+        verbose_name_plural = '系统备份'
+
+    def __str__(self):
+        return f'{self.name} - {self.created_at.strftime("%Y-%m-%d %H:%M")}'
+

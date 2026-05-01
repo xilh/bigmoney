@@ -340,6 +340,31 @@
                 <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">📥 导入 JSON</button>
             </div>
         </div>
+
+        <hr style="margin: 20px 0; border-color: var(--color-border);">
+        
+        <div>
+            <div class="flex-between" style="margin-bottom: 12px;">
+                <h4 style="font-size: 0.9rem; margin: 0;">系统备份与恢复</h4>
+                <button class="btn btn-primary btn-sm" onclick="createBackup()">➕ 创建备份</button>
+            </div>
+            <p class="text-sm text-muted mb-2">可恢复系统持仓到某个时间点，防止数据误删。每次多截图识别确认前会自动创建备份。</p>
+            <div class="table-wrapper">
+                <table id="backupTable">
+                    <thead>
+                        <tr>
+                            <th>备份时间</th>
+                            <th>名称</th>
+                            <th>持仓数量</th>
+                            <th style="text-align: right;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="backupList">
+                        <tr><td colspan="4" class="text-center text-muted" style="padding: 16px;">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -692,6 +717,89 @@ function importData(fileInput) {
     };
     reader.readAsText(file);
 }
+
+// ==================== System Backup ====================
+function loadBackups() {
+    fetch('{% url "assets:api_backup_list" %}')
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) return;
+        const tbody = document.getElementById('backupList');
+        tbody.innerHTML = '';
+        if (data.data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted" style="padding: 16px;">暂无备份</td></tr>';
+            return;
+        }
+        data.data.forEach(b => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${b.created_at}</td>
+                <td>
+                    ${b.name}
+                    ${b.is_auto ? '<span class="badge badge-warning" style="margin-left:4px;font-size:0.7rem;">自动</span>' : ''}
+                </td>
+                <td>${b.holdings_count} 项</td>
+                <td style="text-align: right;">
+                    <button class="btn btn-sm btn-secondary" onclick="restoreBackup(${b.id}, '${b.name}')">恢复</button>
+                    <button class="btn btn-sm btn-secondary" style="color:var(--color-danger);margin-left:4px;" onclick="deleteBackup(${b.id})">删除</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    });
+}
+
+function createBackup() {
+    fetch('{% url "assets:api_backup_create" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+    })
+    .then(r => r.json())
+    .then(res => {
+        if(res.success) {
+            showToast('备份创建成功', 'success');
+            loadBackups();
+        } else {
+            showToast('备份失败: ' + res.error, 'error');
+        }
+    });
+}
+
+function restoreBackup(id, name) {
+    if(!confirm(`警告：此操作将清空当前所有持仓，并恢复为【${name}】的状态。\n\n您确定要继续吗？`)) return;
+    
+    fetch(`/api/backup/${id}/restore/`, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+    })
+    .then(r => r.json())
+    .then(res => {
+        if(res.success) {
+            showToast('系统恢复成功', 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showToast('恢复失败: ' + res.error, 'error');
+        }
+    });
+}
+
+function deleteBackup(id) {
+    if(!confirm('确定要删除此备份吗？')) return;
+    fetch(`/api/backup/${id}/delete/`, {
+        method: 'DELETE',
+        headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+    })
+    .then(r => r.json())
+    .then(res => {
+        if(res.success) {
+            loadBackups();
+        } else {
+            showToast('删除失败: ' + res.error, 'error');
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', loadBackups);
 
 recalcTotal();
 </script>

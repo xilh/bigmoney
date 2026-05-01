@@ -64,6 +64,7 @@
 
         </div>
         <div class="table-wrapper">
+            <datalist id="existingHoldingsDatalist"></datalist>
             <table id="resultsTable">
                 <thead>
                     <tr>
@@ -85,7 +86,7 @@
         </div>
         <div id="missingHoldingsContainer" class="hidden" style="margin-top: 16px; padding: 16px; background: rgba(239,68,68,0.05); border: 1px solid rgba(239,68,68,0.2); border-radius: 8px;">
             <div style="color: var(--color-danger); font-weight: 600; margin-bottom: 8px; font-size: 0.95rem;">⚠️ 未识别到的已有持仓（是否已卖出？）</div>
-            <div class="text-sm text-muted" style="margin-bottom: 12px;">以下资产存在于您的当前记录中，但在本次上传的截图中未能找到。如果您已将其卖出/清仓，请勾选确认。</div>
+            <div class="text-sm text-muted" style="margin-bottom: 12px;">以下资产存在于您的当前记录中，但在本次上传的截图中未能找到。如果您已将其卖出/清仓，请勾选确认。<span style="color: var(--color-danger); font-weight: bold;">(注意：批量上传多张截图时，请勿随意勾选，以免误删其他截图中的持仓)</span></div>
             <div id="missingHoldingsList" style="display: flex; flex-direction: column; gap: 8px;"></div>
         </div>
     </div>
@@ -293,6 +294,45 @@ document.getElementById('detectedPlatform').addEventListener('change', function(
     }
 });
 
+function updateDatalist() {
+    const datalist = document.getElementById('existingHoldingsDatalist');
+    datalist.innerHTML = '';
+    const currentPlatform = document.getElementById('detectedPlatform').value || '';
+    
+    // We want unique names for the datalist to avoid duplicates
+    const names = new Set();
+    existingHoldingsSet.forEach(val => {
+        const parts = val.split('||');
+        const name = parts[0];
+        const plat = parts[1];
+        if (plat === currentPlatform || !currentPlatform) {
+            names.add(name);
+        }
+    });
+    
+    names.forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        datalist.appendChild(option);
+    });
+}
+
+function updateRowStatus(inputElem) {
+    const tr = inputElem.closest('tr');
+    const newName = inputElem.value.trim();
+    const currentPlatform = document.getElementById('detectedPlatform').value || '';
+    const isExisting = existingHoldingsSet.has(newName + '||' + currentPlatform);
+    
+    const badgeTd = tr.querySelector('.status-badge-td');
+    if (isExisting) {
+        badgeTd.innerHTML = '<span class="badge badge-success" title="已有持仓，将更新数据">更新</span>';
+        tr.style.background = ''; // reset background
+    } else {
+        badgeTd.innerHTML = '<span class="badge badge-warning" title="系统中无此产品，将新建持仓">新增</span>';
+        tr.style.background = 'var(--color-warning-bg, #fffbeb)';
+    }
+}
+
 function skipCurrent() {
     addLog(`⏭️ 已跳过图片 ${currentFile.name}`);
     pendingConfirmations.shift(); // Remove from queue
@@ -321,6 +361,9 @@ function renderResults(items, missingHoldings = []) {
 
     // Get platform from the detected platform input for matching
     const currentPlatform = document.getElementById('detectedPlatform').value || '';
+    
+    // Update the datalist for the current platform
+    updateDatalist();
 
     items.forEach((item, idx) => {
         const tr = document.createElement('tr');
@@ -360,9 +403,9 @@ function renderResults(items, missingHoldings = []) {
 
         tr.innerHTML = `
             <td><input type="checkbox" checked class="row-check"></td>
-            <td>${statusBadge}</td>
+            <td class="status-badge-td">${statusBadge}</td>
             <td>
-                <input type="text" class="form-control" value="${itemName}" data-field="name" style="min-width:140px;">
+                <input type="text" class="form-control" value="${itemName}" data-field="name" list="existingHoldingsDatalist" style="min-width:140px;" oninput="updateRowStatus(this)">
             </td>
             <td><input type="text" class="form-control" value="${item.code || ''}" data-field="code" style="width:80px;"></td>
             <td>${typeSelect}</td>
@@ -392,7 +435,7 @@ function renderResults(items, missingHoldings = []) {
             row.style.alignItems = 'center';
             row.style.gap = '8px';
             row.style.cursor = 'pointer';
-            row.innerHTML = `<input type="checkbox" class="missing-check" value="${mh.id}" checked>
+            row.innerHTML = `<input type="checkbox" class="missing-check" value="${mh.id}">
                 <strong>${mh.name}</strong> 
                 <span class="text-sm text-muted">当前市值: ¥${mh.market_value} / 数量: ${mh.quantity}</span>`;
             missingList.appendChild(row);
