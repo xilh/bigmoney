@@ -358,3 +358,172 @@ class TransactionValidationTest(TestCase):
             amount=Decimal('1000'), date=date.today(),
         )
         tx.clean()  # Should not raise
+
+
+# ============================================================
+# 数据准确性回归测试（P0/P1 修复）
+# ============================================================
+
+from .services.ledger import (
+    snapshot_holding, record_holding_change, record_holding_removal,
+    _record_sell,
+)
+
+
+class LedgerTimezoneTest(TestCase):
+    """ledger 服务应使用本地日期，不能用 UTC 日期。"""
+
+    def setUp(self):
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+
+    def test_buy_uses_local_date(self):
+        h = Holding.objects.create(
+            layer=self.layer, name='A',
+            quantity=Decimal('100'), cost_price=Decimal('10'),
+            current_price=Decimal('11'),
+        )
+        record_holding_change(h, old_data=None, source='manual')
+        tx = Transaction.objects.filter(action='buy', asset_name='A').first()
+        self.assertIsNotNone(tx)
+        self.assertEqual(tx.date, timezone.localdate())
+
+    def test_sell_uses_local_date(self):
+        h = Holding.objects.create(
+            layer=self.layer, name='B',
+            quantity=Decimal('100'), cost_price=Decimal('10'),
+            current_price=Decimal('11'),
+        )
+        record_holding_removal(h, source='manual')
+        tx = Transaction.objects.filter(action='sell', asset_name='B').first()
+        self.assertIsNotNone(tx)
+        self.assertEqual(tx.date, timezone.localdate())
+
+
+class SellRealizedPnlTest(TestCase):
+    """_record_sell 应使用市值差额（更贴近实际成交价）计算盈亏。"""
+
+    def setUp(self):
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+
+    def test_sell_uses_market_value_delta(self):
+        """卖出 50/100 份，old market_value=1500，new market_value=750
+        → 成交额=750，cost=10*50=500，realized=250"""
+        h = Holding.objects.create(
+            layer=self.layer, name='C',
+            quantity=Decimal('100'), cost_price=Decimal('10'),
+            current_price=Decimal('15'),
+            market_value=Decimal('1500'),
+        )
+        old_data = {
+            'quantity': Decimal('100'),
+            'cost_price': Decimal('10'),
+            'current_price': Decimal('15'),
+            'market_value': Decimal('1500'),
+            'profit_loss': Decimal('500'),
+            'name': h.name,
+            'platform': '',
+        }
+        # 模拟卖出后状态
+        h.quantity = Decimal('50')
+        h.market_value = Decimal('750')
+        h.save()
+        tx = _record_sell(h, Decimal('50'), old_data, 'manual')
+        self.assertEqual(tx.amount, Decimal('750'))
+        self.assertEqual(tx.realized_pnl, Decimal('250'))
+
+
+class PartialSellMarketValueTest(TestCase):
+    """部分卖出且 current_price 为空时，应按剩余份额比例缩减市值，不应清零。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+        self.client = Client()
+
+    def test_partial_sell_no_current_price_preserves_market_value(self):
+        h = Holding.objects.create(
+            layer=self.layer, name='理财D',
+            quantity=Decimal('100'), cost_price=Decimal('10'),
+            current_price=None,
+            market_value=Decimal('1100'),
+        )
+        # 直接卖 30 份
+        from django.test.utils import override_settings
+        with override_settings(AUTH_REQUIRED=False):
+            import json as _json
+            resp = self.client.post(
+                f'/api/holding/{h.id}/sell/',
+                data=_json.dumps({'quantity': '30', 'amount': '350'}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 200)
+        h.refresh_from_db()
+        self.assertEqual(h.quantity, Decimal('70'))
+        # 应按比例缩减：1100 * 70/100 = 770（不是 0）
+        self.assertEqual(h.market_value, Decimal('770.00'))
+
+
+class SnapshotHoldingsCostTest(TestCase):
+    """快照应保存 cost_price/quantity 便于事后重算。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+        self.client = Client()
+
+    def test_snapshot_includes_cost_and_quantity(self):
+        Holding.objects.create(
+            layer=self.layer, name='E',
+            quantity=Decimal('50'), cost_price=Decimal('20'),
+            current_price=Decimal('22'),
+        )
+        from django.test.utils import override_settings
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post('/api/snapshot/create/', data='{}', content_type='application/json')
+        self.assertEqual(resp.status_code, 200)
+        snap = Snapshot.objects.first()
+        self.assertEqual(len(snap.holdings_data), 1)
+        item = snap.holdings_data[0]
+        self.assertEqual(item['cost_price'], 20.0)
+        self.assertEqual(item['quantity'], 50.0)
+        self.assertEqual(item['current_price'], 22.0)
+
+
+class TransactionUpdateRecalcTest(TestCase):
+    """api_transaction_update 改 amount 时应让 quantity*price 与 realized_pnl 自洽。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.client = Client()
+
+    def test_update_amount_recalcs_price_and_realized(self):
+        tx = Transaction.objects.create(
+            action='sell', asset_name='F',
+            quantity=Decimal('100'), price=Decimal('10'),
+            amount=Decimal('1000'),
+            realized_pnl=Decimal('200'),  # 隐含成本 = 1000 - 200 = 800
+            date=timezone.localdate(),
+        )
+        from django.test.utils import override_settings
+        import json as _json
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post(
+                f'/api/transaction/{tx.id}/update/',
+                data=_json.dumps({'amount': '1200'}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 200)
+        tx.refresh_from_db()
+        self.assertEqual(tx.amount, Decimal('1200'))
+        # price 从 1200/100 反推
+        self.assertEqual(tx.price, Decimal('12.0000'))
+        # realized_pnl 重算：amount 1200 - cost 800 = 400
+        self.assertEqual(tx.realized_pnl, Decimal('400.00'))

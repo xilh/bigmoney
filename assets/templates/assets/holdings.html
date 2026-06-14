@@ -15,6 +15,103 @@
 </div>
 
 <style>
+/* ── Platform filter tab bar ── */
+.platform-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+    padding: 12px 16px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    position: sticky;
+    top: 12px;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+}
+.platform-filter-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-right: 4px;
+    white-space: nowrap;
+}
+.platform-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1.5px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-muted);
+    transition: all 0.18s ease;
+    white-space: nowrap;
+    user-select: none;
+}
+.platform-tab:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+    background: rgba(99, 102, 241, 0.06);
+}
+.platform-tab.active {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+}
+.platform-tab .tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: rgba(255,255,255,0.25);
+    color: inherit;
+}
+.platform-tab:not(.active) .tab-count {
+    background: var(--color-border);
+    color: var(--color-text-muted);
+}
+
+/* ── Filter active state indicator in accordion ── */
+.layer-filtered-info {
+    font-size: 0.75rem;
+    color: var(--color-primary);
+    margin-left: 6px;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+.layer-filtered-info.visible {
+    opacity: 1;
+}
+
+/* ── Hidden row ── */
+tr.platform-hidden {
+    display: none;
+}
+
+/* ── Layer empty placeholder when all rows filtered out ── */
+.layer-all-filtered {
+    padding: 14px 16px;
+    color: var(--color-text-muted);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+/* ── Sortable columns ── */
 .sortable {
     cursor: pointer;
     user-select: none;
@@ -43,6 +140,25 @@
 }
 </style>
 
+{% if platforms %}
+<!-- Platform Filter Bar -->
+<div class="platform-filter-bar" id="platformFilterBar">
+    <span class="platform-filter-label">🏦 平台</span>
+    <button class="platform-tab active" data-platform="all" onclick="filterByPlatform('all', this)">
+        全部 <span class="tab-count" id="tab-count-all"></span>
+    </button>
+    {% for p in platforms %}
+    <button class="platform-tab" data-platform="{{ p|escapejs }}" onclick="filterByPlatform('{{ p|escapejs }}', this)">
+        {{ p }} <span class="tab-count" id="tab-count-{{ forloop.counter }}"></span>
+    </button>
+    {% endfor %}
+    {% comment %} Tab for holdings with no platform set {% endcomment %}
+    <button class="platform-tab" data-platform="__none__" onclick="filterByPlatform('__none__', this)" id="tab-none" style="display:none;">
+        未归属 <span class="tab-count" id="tab-count-none"></span>
+    </button>
+</div>
+{% endif %}
+
 <!-- Layer Accordion -->
 {% for layer in layers %}
 {% with layer_data=layers_data|dictsort:"order" %}
@@ -53,10 +169,11 @@
             <div>
                 <strong>{{ layer.name }}</strong>
                 <span class="text-sm text-muted" style="margin-left: 8px;">目标 {{ layer.target_ratio }}%</span>
+                <span class="layer-filtered-info" id="layer-info-{{ layer.id }}"></span>
             </div>
         </div>
         <div class="accordion-header-right">
-            <span class="font-mono">¥{{ layer.total_market_value|floatformat:0 }}</span>
+            <span class="font-mono" id="layer-value-{{ layer.id }}">¥{{ layer.total_market_value|floatformat:0 }}</span>
             {% for ld in layers_data %}
                 {% if ld.id == layer.id %}
                     <span class="badge {% if ld.deviation > 5 or ld.deviation < -5 %}badge-danger{% elif ld.deviation > 3 or ld.deviation < -3 %}badge-warning{% else %}badge-success{% endif %}">
@@ -70,7 +187,7 @@
     <div class="accordion-body">
         <div class="accordion-content">
             {% if layer.holdings.all %}
-            <table>
+            <table id="table-layer-{{ layer.id }}">
                 <thead>
                     <tr>
                         <th class="sortable" onclick="sortTable(this, 0, 'string')">名称</th>
@@ -85,7 +202,7 @@
                 </thead>
                 <tbody>
                     {% for h in layer.holdings.all %}
-                    <tr id="holding-row-{{ h.id }}">
+                    <tr id="holding-row-{{ h.id }}" data-platform="{{ h.platform|default:'' }}">
                         <td><a href="{% url 'assets:asset_detail' h.id %}" style="color:inherit;"><strong>{{ h.name }}</strong></a></td>
                         <td class="text-muted text-sm">{{ h.platform|default:"-" }}</td>
                         <td class="text-muted font-mono">{{ h.code|default:"-" }}</td>
@@ -99,13 +216,16 @@
                             <div class="btn-group">
                                 <button class="btn btn-sm btn-secondary" onclick="openEditModal({{ h.id }}, '{{ h.name|escapejs }}', '{{ h.code }}', '{{ h.asset_type }}', {{ h.quantity }}, {{ h.cost_price|default:'null' }}, {{ h.current_price|default:'null' }}, {{ h.market_value }}, {{ layer.id }}, '{{ h.notes|escapejs }}', '{{ h.platform|escapejs }}')">编辑</button>
                                 <button class="btn btn-sm btn-warning" style="background:var(--color-warning);color:var(--color-bg);border:none;" onclick="openSellModal({{ h.id }}, '{{ h.name|escapejs }}', {{ h.quantity }})">卖出</button>
-                                <button class="btn btn-sm btn-danger" onclick="deleteHolding({{ h.id }})">删除</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteHolding({{ h.id }}, '{{ h.name|escapejs }}')">删除</button>
                             </div>
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+            <div class="layer-all-filtered" id="layer-empty-{{ layer.id }}" style="display:none;">
+                该层级在此平台下暂无持仓
+            </div>
             {% else %}
             <div class="empty-state">
                 <div class="empty-state-text">该层级暂无持仓</div>
@@ -186,34 +306,59 @@
                 </div>
             </div>
         </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-            <button class="btn btn-primary" onclick="saveHolding()">保存</button>
+        <div class="modal-footer" style="flex-direction: column; align-items: stretch; gap: 10px;">
+            <!-- Correction mode toggle -->
+            <label id="correctionModeWrap" style="
+                display: flex; align-items: center; gap: 10px;
+                padding: 10px 14px;
+                border-radius: 8px;
+                background: rgba(251,191,36,0.08);
+                border: 1.5px solid rgba(251,191,36,0.25);
+                cursor: pointer;
+                user-select: none;
+                transition: background 0.15s;
+            ">
+                <input type="checkbox" id="correctionMode" style="width:16px;height:16px;cursor:pointer;accent-color:#f59e0b;">
+                <span style="font-size:0.82rem; color: #f59e0b; font-weight:600;">🔧 数据修正模式</span>
+                <span style="font-size:0.75rem; color: var(--color-text-muted); flex:1;">勾选后本次修改<strong>不产生</strong>交易台账记录</span>
+            </label>
+            <div style="display:flex; gap:8px;">
+                <button class="btn btn-secondary" onclick="closeModal()" style="flex:1">取消</button>
+                <button class="btn btn-primary" onclick="saveHolding()" style="flex:1">保存</button>
+            </div>
         </div>
     </div>
 </div>
 
 <script>
+// ── Accordion ──────────────────────────────────────────────
 function toggleAccordion(header) {
     const item = header.parentElement;
     item.classList.toggle('open');
 }
 
+// Open all by default
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.accordion-item').forEach(item => item.classList.add('open'));
+    initTabCounts();
+});
+
+// ── Sortable columns ───────────────────────────────────────
 function sortTable(th, colIndex, type) {
     const table = th.closest('table');
     const tbody = table.querySelector('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
-    
+
     const isAsc = th.dataset.sort === 'asc';
     const newSort = isAsc ? 'desc' : 'asc';
-    
+
     table.querySelectorAll('.sortable').forEach(h => h.removeAttribute('data-sort'));
     th.dataset.sort = newSort;
 
     rows.sort((a, b) => {
         let valA = a.cells[colIndex].textContent.trim();
         let valB = b.cells[colIndex].textContent.trim();
-        
+
         if (type === 'number') {
             const matchA = valA.match(/-?[\d,]+(\.\d+)?/);
             const matchB = valB.match(/-?[\d,]+(\.\d+)?/);
@@ -224,15 +369,125 @@ function sortTable(th, colIndex, type) {
             return newSort === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
         }
     });
-    
+
     tbody.append(...rows);
 }
 
-// Open all by default
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelectorAll('.accordion-item').forEach(item => item.classList.add('open'));
-});
+// ── Platform filter ────────────────────────────────────────
+let currentPlatform = 'all';
 
+// Count holdings per platform across all rows
+function getPlatformCounts() {
+    const counts = { all: 0, __none__: 0 };
+    document.querySelectorAll('tr[data-platform]').forEach(row => {
+        counts.all++;
+        const p = row.dataset.platform.trim();
+        if (!p) {
+            counts.__none__ = (counts.__none__ || 0) + 1;
+        } else {
+            counts[p] = (counts[p] || 0) + 1;
+        }
+    });
+    return counts;
+}
+
+function initTabCounts() {
+    const counts = getPlatformCounts();
+
+    // "全部" tab
+    const allEl = document.getElementById('tab-count-all');
+    if (allEl) allEl.textContent = counts.all;
+
+    // Numbered tabs for each platform
+    document.querySelectorAll('.platform-tab[data-platform]').forEach(tab => {
+        const p = tab.dataset.platform;
+        if (p === 'all' || p === '__none__') return;
+        const countEl = tab.querySelector('.tab-count');
+        if (countEl) countEl.textContent = counts[p] || 0;
+    });
+
+    // "未归属" tab - only show if there are holdings without a platform
+    const noneTab = document.getElementById('tab-none');
+    if (noneTab) {
+        const noneCount = counts.__none__ || 0;
+        document.getElementById('tab-count-none').textContent = noneCount;
+        noneTab.style.display = noneCount > 0 ? '' : 'none';
+    }
+}
+
+function filterByPlatform(platform, clickedBtn) {
+    currentPlatform = platform;
+
+    // Update active tab styling
+    document.querySelectorAll('.platform-tab').forEach(btn => btn.classList.remove('active'));
+    clickedBtn.classList.add('active');
+
+    // Apply filter to every holding row
+    document.querySelectorAll('tr[data-platform]').forEach(row => {
+        const p = row.dataset.platform.trim();
+        let visible = false;
+        if (platform === 'all') {
+            visible = true;
+        } else if (platform === '__none__') {
+            visible = !p;
+        } else {
+            visible = (p === platform);
+        }
+        row.classList.toggle('platform-hidden', !visible);
+    });
+
+    // Update each layer accordion: show/hide empty placeholder, update subtotal
+    document.querySelectorAll('.accordion-item[id^="layer-"]').forEach(item => {
+        const layerId = item.id.replace('layer-', '');
+        const tbody = item.querySelector('tbody');
+        const emptyEl = document.getElementById('layer-empty-' + layerId);
+        const infoEl  = document.getElementById('layer-info-' + layerId);
+        const valueEl = document.getElementById('layer-value-' + layerId);
+
+        if (!tbody) return;
+
+        const allRows = Array.from(tbody.querySelectorAll('tr[data-platform]'));
+        const visibleRows = allRows.filter(r => !r.classList.contains('platform-hidden'));
+
+        // Toggle the "no results in this layer" placeholder
+        if (emptyEl) {
+            emptyEl.style.display = visibleRows.length === 0 && allRows.length > 0 ? '' : 'none';
+        }
+
+        // Update layer subtotal and count badge
+        if (infoEl && valueEl) {
+            if (platform === 'all') {
+                infoEl.textContent = '';
+                infoEl.classList.remove('visible');
+                // Restore original total (read from data attribute set once)
+                if (item.dataset.origValue) {
+                    valueEl.textContent = '¥' + item.dataset.origValue;
+                }
+            } else {
+                // Save original on first filter usage
+                if (!item.dataset.origValue) {
+                    item.dataset.origValue = valueEl.textContent.replace(/[¥,]/g, '').trim();
+                }
+                // Sum filtered rows
+                let subtotal = 0;
+                visibleRows.forEach(row => {
+                    const mvCell = row.cells[5]; // 市值 column
+                    if (mvCell) {
+                        const match = mvCell.textContent.replace(/,/g, '').match(/-?[\d.]+/);
+                        if (match) subtotal += parseFloat(match[0]);
+                    }
+                });
+                const formatted = Math.round(subtotal).toLocaleString('zh-CN');
+                valueEl.textContent = '¥' + formatted;
+                infoEl.textContent = visibleRows.length > 0
+                    ? `(${visibleRows.length} 只)`
+                    : '(无)';
+                infoEl.classList.add('visible');
+            }
+        }
+    });
+}
+// ── Modal ──────────────────────────────────────────────────
 function openAddModal(layerId) {
     document.getElementById('modalTitle').textContent = '添加持仓';
     document.getElementById('editHoldingId').value = '';
@@ -271,6 +526,7 @@ function closeModal() {
 
 function saveHolding() {
     const editId = document.getElementById('editHoldingId').value;
+    const isCorrection = document.getElementById('correctionMode').checked;
     const data = {
         layer_id: parseInt(document.getElementById('holdingLayer').value),
         name: document.getElementById('holdingName').value,
@@ -282,6 +538,7 @@ function saveHolding() {
         market_value: document.getElementById('holdingMarketValue').value || 0,
         notes: document.getElementById('holdingNotes').value,
         platform: document.getElementById('holdingPlatform').value,
+        is_correction: isCorrection,
     };
 
     if (!data.name) {
@@ -309,7 +566,10 @@ function saveHolding() {
     .then(r => r.json())
     .then(result => {
         if (result.success) {
-            showToast(editId ? '持仓已更新' : '持仓已添加', 'success');
+            const msg = editId
+                ? (isCorrection ? '持仓已修正（无台账记录）' : '持仓已更新')
+                : '持仓已添加';
+            showToast(msg, 'success');
             closeModal();
             setTimeout(() => location.reload(), 500);
         } else {
@@ -318,17 +578,72 @@ function saveHolding() {
     });
 }
 
-function deleteHolding(id) {
-    if (!confirm('确定删除该持仓？')) return;
-    fetch(`/api/holding/${id}/delete/`, {
+function deleteHolding(id, name) {
+    // Custom delete dialog with correction mode option
+    _showDeleteDialog(id, name || '该持仓');
+}
+
+function _showDeleteDialog(id, name) {
+    // Remove any existing dialog
+    const existing = document.getElementById('deleteConfirmDialog');
+    if (existing) existing.remove();
+
+    const dialog = document.createElement('div');
+    dialog.id = 'deleteConfirmDialog';
+    dialog.style.cssText = `
+        position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+        display: flex; align-items: center; justify-content: center; z-index: 9999;
+    `;
+    dialog.innerHTML = `
+        <div style="
+            background: var(--color-surface); border: 1px solid var(--color-border);
+            border-radius: 14px; padding: 24px; max-width: 380px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+        ">
+            <div style="font-size:1rem; font-weight:700; margin-bottom:8px;">删除持仓</div>
+            <div style="font-size:0.88rem; color:var(--color-text-muted); margin-bottom:18px;">
+                确定删除「<strong style="color:var(--color-text);">${name}</strong>」？
+            </div>
+            <label style="
+                display:flex; align-items:center; gap:10px; padding:10px 14px;
+                border-radius:8px; background:rgba(251,191,36,0.08);
+                border:1.5px solid rgba(251,191,36,0.25);
+                cursor:pointer; margin-bottom:18px;
+            ">
+                <input type="checkbox" id="deleteCorrectionMode" style="width:16px;height:16px;accent-color:#f59e0b;">
+                <span style="font-size:0.82rem; color:#f59e0b; font-weight:600;">🔧 数据修正删除</span>
+                <span style="font-size:0.75rem; color:var(--color-text-muted); flex:1;">不生成卖出记录</span>
+            </label>
+            <div style="display:flex; gap:10px;">
+                <button id="deleteCancelBtn" class="btn btn-secondary" style="flex:1;">取消</button>
+                <button id="deleteConfirmBtn" class="btn btn-danger" style="flex:1;">确认删除</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+
+    document.getElementById('deleteCancelBtn').onclick = () => dialog.remove();
+    dialog.addEventListener('click', e => { if (e.target === dialog) dialog.remove(); });
+
+    document.getElementById('deleteConfirmBtn').onclick = () => {
+        const isCorrection = document.getElementById('deleteCorrectionMode').checked;
+        dialog.remove();
+        _doDelete(id, isCorrection);
+    };
+}
+
+function _doDelete(id, isCorrection) {
+    const url = isCorrection
+        ? `/api/holding/${id}/delete/?correction=1`
+        : `/api/holding/${id}/delete/`;
+    fetch(url, {
         method: 'DELETE',
         headers: { 'X-CSRFToken': '{{ csrf_token }}' },
     })
     .then(r => r.json())
     .then(result => {
         if (result.success) {
-            showToast('已删除', 'success');
-            document.getElementById('holding-row-' + id).remove();
+            showToast(isCorrection ? '已删除（数据修正，无卖出记录）' : '已删除', 'success');
+            document.getElementById('holding-row-' + id)?.remove();
         } else {
             showToast('删除失败', 'error');
         }

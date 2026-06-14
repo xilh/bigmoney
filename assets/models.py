@@ -64,7 +64,7 @@ class Holding(models.Model):
     current_price = models.DecimalField('当前价/净值', max_digits=14, decimal_places=4, null=True, blank=True)
     market_value = models.DecimalField('市值(元)', max_digits=18, decimal_places=2, default=0, db_index=True)
     profit_loss = models.DecimalField('盈亏(元)', max_digits=18, decimal_places=2, default=0)
-    profit_loss_pct = models.DecimalField('盈亏比例(%)', max_digits=10, decimal_places=4, default=0)
+    profit_loss_pct = models.DecimalField('盈亏比例(%)', max_digits=16, decimal_places=4, default=0)
     source = models.CharField(
         '数据来源', max_length=20, default='manual',
         choices=[('manual', '手动输入'), ('screenshot', '截图识别')]
@@ -101,14 +101,19 @@ class Holding(models.Model):
             self.market_value = (self.current_price * self.quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             self.profit_loss = (self.market_value - cost_total).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             if cost_total > 0:
-                self.profit_loss_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                raw_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                # Clamp to fit DecimalField(max_digits=16, decimal_places=4)
+                _MAX_PCT = Decimal('999999999999.9999')
+                self.profit_loss_pct = max(-_MAX_PCT, min(_MAX_PCT, raw_pct))
             else:
                 self.profit_loss_pct = Decimal('0')
         elif not self.cost_price and self.market_value and self.profit_loss:
             # 无成本价但有市值和非零盈亏，反推成本并计算收益率
             cost_total = self.market_value - self.profit_loss
             if cost_total > 0:
-                self.profit_loss_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                raw_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                _MAX_PCT = Decimal('999999999999.9999')
+                self.profit_loss_pct = max(-_MAX_PCT, min(_MAX_PCT, raw_pct))
                 if self.quantity and self.quantity > 0:
                     self.cost_price = (cost_total / self.quantity).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
                     if self.market_value and self.quantity:

@@ -35,6 +35,7 @@ urlpatterns = [
     path('api/transaction/create/', _protected(views.api_transaction_create), name='api_transaction_create'),
     path('api/transaction/<int:tx_id>/update/', _protected(views.api_transaction_update), name='api_transaction_update'),
     path('api/transaction/<int:tx_id>/delete/', _protected(views.api_transaction_delete), name='api_transaction_delete'),
+    path('api/transaction/batch-delete/', _protected(views.api_transaction_batch_delete), name='api_transaction_batch_delete'),
     path('api/holding/<int:holding_id>/update/', _protected(views.api_holding_update), name='api_holding_update'),
     path('api/holding/<int:holding_id>/delete/', _protected(views.api_holding_delete), name='api_holding_delete'),
     path('api/holding/<int:holding_id>/sell/', _protected(views.api_holding_sell), name='api_holding_sell'),

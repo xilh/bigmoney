@@ -5,11 +5,12 @@
 """
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import json
 from django.db.models import Sum, Q
+from django.utils import timezone
 
 from ..models import Snapshot, Transaction, Holding, Setting
 
@@ -223,7 +224,7 @@ def _analyze_periods(snapshots):
 def _build_monthly_chart(periods):
     """按月汇总资金流向，用于柱状图。"""
     # 取最近 6 个月的交易数据
-    six_months_ago = date.today().replace(day=1) - timedelta(days=180)
+    six_months_ago = timezone.localdate().replace(day=1) - timedelta(days=180)
     txs = Transaction.objects.filter(date__gte=six_months_ago)
 
     monthly = defaultdict(lambda: {

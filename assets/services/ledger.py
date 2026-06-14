@@ -78,7 +78,7 @@ def record_holding_removal(holding, source='manual'):
         quantity=qty,
         price=price,
         amount=amount,
-        date=timezone.now().date(),
+        date=timezone.localdate(),
         source=source,
         realized_pnl=realized,
         platform=holding.platform,
@@ -101,7 +101,7 @@ def _record_buy(holding, qty, source):
         quantity=qty,
         price=price,
         amount=amount,
-        date=timezone.now().date(),
+        date=timezone.localdate(),
         source=source,
         platform=holding.platform,
         notes='自动记录' if source != 'manual' else '',
@@ -111,13 +111,32 @@ def _record_buy(holding, qty, source):
 
 
 def _record_sell(holding, qty_sold, old_data, source):
-    """创建卖出交易记录，计算已实现盈亏。"""
-    price = holding.current_price or Decimal('0')
-    amount = price * qty_sold if price else Decimal('0')
+    """
+    创建卖出交易记录，计算已实现盈亏。
 
-    # 计算已实现盈亏：(卖出价 - 成本价) * 卖出数量
+    口径与 api_holding_sell 保持一致：优先用实际成交金额（按当前持仓比例反推）。
+    当 holding.market_value 与 old quantity 都已知时，
+    用 `(old_market_value - new_market_value)` 作为成交额；
+    否则退化到 current_price * qty_sold。
+    """
     cost_price = old_data.get('cost_price') or Decimal('0')
-    realized = (price - cost_price) * qty_sold if price and cost_price else Decimal('0')
+    old_qty = old_data.get('quantity') or Decimal('0')
+    old_mv = old_data.get('market_value') or Decimal('0')
+    new_mv = holding.market_value or Decimal('0')
+
+    # 优先用市值差额作为成交金额（更贴近实际成交价）
+    if old_qty > 0 and old_mv > 0 and new_mv >= 0 and qty_sold > 0:
+        amount = (old_mv - new_mv) if old_mv > new_mv else (old_mv * qty_sold / old_qty)
+        price = (amount / qty_sold) if qty_sold > 0 else Decimal('0')
+    else:
+        price = holding.current_price or Decimal('0')
+        amount = price * qty_sold if price else Decimal('0')
+
+    # 已实现盈亏：成交金额 - 卖出部分对应的成本
+    if cost_price and qty_sold:
+        realized = amount - (cost_price * qty_sold)
+    else:
+        realized = Decimal('0')
 
     tx = Transaction.objects.create(
         holding=holding,
@@ -126,7 +145,7 @@ def _record_sell(holding, qty_sold, old_data, source):
         quantity=qty_sold,
         price=price,
         amount=amount,
-        date=timezone.now().date(),
+        date=timezone.localdate(),
         source=source,
         realized_pnl=realized,
         platform=holding.platform,

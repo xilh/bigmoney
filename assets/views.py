@@ -137,8 +137,8 @@ def dashboard(request):
             'value': float(item['total'] or 0)
         })
 
-    # 本月资金流入/流出（从交易记录推算）
-    month_start = date.today().replace(day=1)
+    # 本月资金流入/流出（从交易记录推算，使用本地日期）
+    month_start = timezone.localdate().replace(day=1)
     month_transfers = Transaction.objects.filter(
         action='transfer', date__gte=month_start,
     ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
@@ -168,11 +168,20 @@ def holdings_page(request):
     layers = AssetLayer.objects.prefetch_related('holdings').all()
     layers_data, total_value = _get_layers_summary()
 
+    # Distinct non-empty platforms for the filter tab bar
+    platforms = list(
+        Holding.objects.exclude(platform='')
+        .values_list('platform', flat=True)
+        .distinct()
+        .order_by('platform')
+    )
+
     context = {
         'layers': layers,
         'total_value': total_value,
         'layers_data': layers_data,
         'asset_type_choices': ASSET_TYPE_CHOICES,
+        'platforms': platforms,
     }
     return render(request, 'assets/holdings.html', context)
 
@@ -475,6 +484,9 @@ def api_holding_update(request, holding_id):
         holding = get_object_or_404(Holding, id=holding_id)
         data = json.loads(request.body)
 
+        # 数据修正模式：只更新数值，不写台账交易记录
+        is_correction = bool(data.get('is_correction', False))
+
         old_data = snapshot_holding(holding)
 
         if 'layer_id' in data:
@@ -500,9 +512,12 @@ def api_holding_update(request, holding_id):
 
         holding.save()
 
-        record_holding_change(holding, old_data, source='manual')
+        if not is_correction:
+            record_holding_change(holding, old_data, source='manual')
+        else:
+            logger.info("Correction mode: skipped ledger write for holding #%d (%s)", holding.id, holding.name)
 
-        return JsonResponse({'success': True})
+        return JsonResponse({'success': True, 'is_correction': is_correction})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -512,9 +527,20 @@ def api_holding_delete(request, holding_id):
     """删除持仓"""
     try:
         holding = get_object_or_404(Holding, id=holding_id)
-        record_holding_removal(holding, source='manual')
+        # 数据修正模式：直接删除，不写台账
+        is_correction = request.GET.get('correction') == '1'
+        if not is_correction:
+            try:
+                body = json.loads(request.body)
+                is_correction = bool(body.get('is_correction', False))
+            except Exception:
+                pass
+        if not is_correction:
+            record_holding_removal(holding, source='manual')
+        else:
+            logger.info("Correction mode: skipped ledger removal for holding #%d (%s)", holding.id, holding.name)
         holding.delete()
-        return JsonResponse({'success': True})
+        return JsonResponse({'success': True, 'is_correction': is_correction})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
@@ -558,7 +584,7 @@ def api_holding_sell(request, holding_id):
                 quantity=sell_qty,
                 price=sell_price,
                 amount=sell_amount,
-                date=timezone.now().date(),
+                date=timezone.localdate(),
                 source='manual',
                 realized_pnl=realized_pnl,
                 platform=holding.platform,
@@ -575,17 +601,23 @@ def api_holding_sell(request, holding_id):
                 quantity=sell_qty,
                 price=sell_price,
                 amount=sell_amount,
-                date=timezone.now().date(),
+                date=timezone.localdate(),
                 source='manual',
                 realized_pnl=realized_pnl,
                 platform=holding.platform,
                 notes='部分卖出'
             )
             # 更新持仓信息
+            original_qty = holding.quantity
             holding.quantity -= sell_qty
-            # 当前价保持不变，市值=现价*剩余数量
+            # 市值：优先用 current_price 重算；如无现价，按剩余份额比例缩减原市值
             current_price = holding.current_price or Decimal('0')
-            holding.market_value = (current_price * holding.quantity).quantize(Decimal('0.01'))
+            if current_price > 0:
+                holding.market_value = (current_price * holding.quantity).quantize(Decimal('0.01'))
+            elif original_qty > 0:
+                ratio = holding.quantity / original_qty
+                holding.market_value = (holding.market_value * ratio).quantize(Decimal('0.01'))
+            # else: 保留原 market_value（不太可能进入此分支）
             # 盈亏重新计算：当前市值 - (剩余数量 * 成本价)
             remaining_cost = holding.quantity * cost_price
             holding.profit_loss = holding.market_value - remaining_cost
@@ -609,13 +641,14 @@ def api_transaction_create(request):
         action = data.get('action')
         asset_name = data.get('asset_name')
         amount = Decimal(str(data.get('amount', 0)))
-        tx_date = data.get('date') or date.today().isoformat()
+        today = timezone.localdate()
+        tx_date = data.get('date') or today.isoformat()
 
         if not action or not asset_name or amount <= 0:
             return JsonResponse({'success': False, 'error': '请提供完整的资金记录信息'}, status=400)
 
         parsed_date = date.fromisoformat(tx_date)
-        if parsed_date > date.today():
+        if parsed_date > today:
             return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
 
         Transaction.objects.create(
@@ -631,7 +664,7 @@ def api_transaction_create(request):
 
 @require_POST
 def api_transaction_update(request, tx_id):
-    """更新操作日志"""
+    """更新操作日志（支持完整字段编辑，并自动维护 quantity*price 与 realized_pnl 自洽）"""
     try:
         tx = get_object_or_404(Transaction, id=tx_id)
         data = json.loads(request.body)
@@ -640,19 +673,70 @@ def api_transaction_update(request, tx_id):
             tx.action = data['action']
         if 'asset_name' in data:
             tx.asset_name = data['asset_name']
-        if 'amount' in data:
-            tx.amount = Decimal(str(data['amount']))
         if 'date' in data:
             parsed_date = date.fromisoformat(data['date'])
-            if parsed_date > date.today():
+            if parsed_date > timezone.localdate():
                 return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
             tx.date = parsed_date
         if 'notes' in data:
             tx.notes = data['notes']
+        if 'platform' in data:
+            tx.platform = data['platform']
+
+        # quantity/price/amount/realized_pnl 互相影响，按提供字段顺序统一更新
+        qty_provided = 'quantity' in data
+        price_provided = 'price' in data
+        amount_provided = 'amount' in data
+        realized_provided = 'realized_pnl' in data
+
+        if qty_provided:
+            tx.quantity = Decimal(str(data['quantity'] or 0))
+        if price_provided:
+            tx.price = Decimal(str(data['price'] or 0))
+        if amount_provided:
+            tx.amount = Decimal(str(data['amount']))
+            # 用户改了 amount 但没改 quantity → 根据 amount/quantity 反推 price，保持自洽
+            if not price_provided and tx.quantity and tx.quantity > 0:
+                tx.price = (tx.amount / tx.quantity).quantize(Decimal('0.0001'))
+        elif qty_provided and price_provided:
+            # 提供了数量和价格但没显式给 amount → 自动算出
+            tx.amount = (tx.quantity * tx.price).quantize(Decimal('0.01'))
+
+        # realized_pnl 处理
+        if realized_provided:
+            # 显式提供 → 直接使用
+            v = data['realized_pnl']
+            tx.realized_pnl = Decimal(str(v)) if v not in (None, '') else None
+        elif tx.action == 'sell' and (amount_provided or qty_provided or price_provided):
+            # 卖出记录金额/数量变了，且用户没显式提供 realized_pnl
+            # → 根据原 realized_pnl 与原 amount 的比例推算（保留盈亏率）
+            #   若原始 realized_pnl 为空则不动
+            if tx.realized_pnl is not None:
+                # 用 (amount - cost_implied) 估算；cost_implied = 原 amount - 原 realized
+                old_tx = Transaction.objects.get(pk=tx.pk)
+                old_amount = old_tx.amount or Decimal('0')
+                old_realized = old_tx.realized_pnl or Decimal('0')
+                cost_implied = old_amount - old_realized
+                if old_amount > 0 and tx.quantity and old_tx.quantity:
+                    # 卖出成本按数量比例缩放
+                    new_cost = cost_implied * (tx.quantity / old_tx.quantity) if old_tx.quantity else cost_implied
+                else:
+                    new_cost = cost_implied
+                tx.realized_pnl = (tx.amount - new_cost).quantize(Decimal('0.01'))
 
         tx.save()
-        return JsonResponse({'success': True})
+        return JsonResponse({
+            'success': True,
+            'tx': {
+                'id': tx.id,
+                'amount': float(tx.amount),
+                'quantity': float(tx.quantity) if tx.quantity else None,
+                'price': float(tx.price) if tx.price else None,
+                'realized_pnl': float(tx.realized_pnl) if tx.realized_pnl is not None else None,
+            }
+        })
     except Exception as e:
+        logger.exception("api_transaction_update failed")
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
 
@@ -665,6 +749,24 @@ def api_transaction_delete(request, tx_id):
         return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+
+@require_POST
+def api_transaction_batch_delete(request):
+    """批量删除交易记录"""
+    try:
+        data = json.loads(request.body)
+        ids = data.get('ids', [])
+        if not ids or not isinstance(ids, list):
+            return JsonResponse({'success': False, 'error': '请提供要删除的记录 ID 列表'}, status=400)
+        # 只允许删除 buy/sell/dividend（不允许批量删 transfer/withdraw，那些是资金记录）
+        qs = Transaction.objects.filter(id__in=ids, action__in=['buy', 'sell', 'dividend', 'rebalance'])
+        count, _ = qs.delete()
+        logger.info("Batch deleted %d transactions: %s", count, ids)
+        return JsonResponse({'success': True, 'deleted': count})
+    except Exception as e:
+        logger.exception("api_transaction_batch_delete failed")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 @require_POST
@@ -772,34 +874,34 @@ def api_confirm_upload(request):
         created_count = 0
         updated_count = 0
 
-        with transaction.atomic():
-            # Create auto backup if needed
-            last_auto = SystemBackup.objects.filter(is_auto=True).order_by('-created_at').first()
-            if not last_auto or (timezone.now() - last_auto.created_at).total_seconds() > 600:
-                holdings = Holding.objects.all()
-                backup_data = [{
-                    'layer_id': h.layer_id,
-                    'name': h.name,
-                    'code': h.code,
-                    'asset_type': h.asset_type,
-                    'quantity': float(h.quantity) if h.quantity is not None else 0,
-                    'cost_price': float(h.cost_price) if h.cost_price is not None else None,
-                    'current_price': float(h.current_price) if h.current_price is not None else None,
-                    'market_value': float(h.market_value) if h.market_value is not None else 0,
-                    'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
-                    'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
-                    'source': h.source,
-                    'platform': h.platform,
-                    'is_reserve': h.is_reserve,
-                    'notes': h.notes,
-                } for h in holdings]
-                SystemBackup.objects.create(name='自动备份 (导入前)', data=backup_data, is_auto=True)
-                
-                # Keep only last 10 auto backups
-                auto_backups = SystemBackup.objects.filter(is_auto=True).order_by('-created_at')[10:]
-                for b in auto_backups:
-                    b.delete()
+        # 自动备份必须在 atomic 块之外创建，否则 confirm 失败时备份也会被回滚 → 失去保险作用
+        last_auto = SystemBackup.objects.filter(is_auto=True).order_by('-created_at').first()
+        if not last_auto or (timezone.now() - last_auto.created_at).total_seconds() > 600:
+            holdings_for_backup = Holding.objects.all()
+            backup_data = [{
+                'layer_id': h.layer_id,
+                'name': h.name,
+                'code': h.code,
+                'asset_type': h.asset_type,
+                'quantity': float(h.quantity) if h.quantity is not None else 0,
+                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+                'current_price': float(h.current_price) if h.current_price is not None else None,
+                'market_value': float(h.market_value) if h.market_value is not None else 0,
+                'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+                'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+                'source': h.source,
+                'platform': h.platform,
+                'is_reserve': h.is_reserve,
+                'notes': h.notes,
+            } for h in holdings_for_backup]
+            SystemBackup.objects.create(name='自动备份 (导入前)', data=backup_data, is_auto=True)
 
+            # 只保留最近 10 份自动备份
+            auto_backups = SystemBackup.objects.filter(is_auto=True).order_by('-created_at')[10:]
+            for b in auto_backups:
+                b.delete()
+
+        with transaction.atomic():
             if upload_id:
                 upload.status = 'confirmed'
                 if platform:
@@ -910,7 +1012,8 @@ def api_snapshot_create(request):
         layer_values = {ld['name']: ld['actual_value'] for ld in layers_data}
         layer_ratios = {ld['name']: ld['actual_ratio'] for ld in layers_data}
 
-        # 保存每笔持仓明细，用于快照对比
+        # 保存每笔持仓明细，用于快照对比与事后重算
+        # 含 cost_price/quantity/current_price 以便日后重新核算已实现盈亏与区间收益
         holdings = Holding.objects.select_related('layer').all()
         holdings_data = [
             {
@@ -919,6 +1022,10 @@ def api_snapshot_create(request):
                 'code': h.code,
                 'layer': h.layer.name,
                 'platform': h.platform,
+                'asset_type': h.asset_type,
+                'quantity': float(h.quantity) if h.quantity is not None else 0,
+                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+                'current_price': float(h.current_price) if h.current_price is not None else None,
                 'market_value': float(h.market_value or 0),
                 'profit_loss': float(h.profit_loss or 0),
                 'profit_loss_pct': float(h.profit_loss_pct or 0),
@@ -1914,7 +2021,7 @@ def api_cashflow_confirm(request):
         data = json.loads(request.body)
         action = data.get('action')  # 'transfer' or 'withdraw'
         amount = Decimal(str(data.get('amount', 0)))
-        tx_date = data.get('date') or date.today().isoformat()
+        tx_date = data.get('date') or timezone.localdate().isoformat()
         notes = data.get('notes', '')
 
         if action not in ('transfer', 'withdraw'):

@@ -121,9 +121,14 @@
 
     <!-- Transaction Log -->
     <div class="card">
-        <div class="card-header flex-between" style="padding: 10px 16px;">
+        <div class="card-header flex-between" style="padding: 10px 16px; flex-wrap: wrap; gap: 8px;">
             <h3>📝 操作日志</h3>
-            <button class="btn btn-primary btn-sm" onclick="showTxForm()">+ 添加</button>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <button id="histBatchDeleteBtn" class="btn btn-sm btn-danger" style="display:none;" onclick="batchDeleteTxHistory()">
+                    🗑 删除选中
+                </button>
+                <button class="btn btn-primary btn-sm" onclick="showTxForm()">+ 添加</button>
+            </div>
         </div>
         <div class="card-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
             <!-- Add / Edit Form -->
@@ -162,10 +167,34 @@
 
             {% if transactions %}
             <table>
+                <thead>
+                    <tr>
+                        <th style="width:30px; padding: 6px 8px;">
+                            <input type="checkbox" id="selectAllHistTx" style="width:14px;height:14px;cursor:pointer;"
+                                   onchange="toggleHistSelectAll(this)">
+                        </th>
+                        <th style="padding:6px 8px;">日期</th>
+                        <th style="padding:6px 4px;">类型</th>
+                        <th style="padding:6px 4px;">资产</th>
+                        <th style="padding:6px 8px;" class="text-right">金额</th>
+                        <th style="padding:6px 8px;"></th>
+                    </tr>
+                </thead>
                 <tbody>
                     {% for tx in transactions %}
-                    <tr id="tx-row-{{ tx.id }}">
-                        <td style="padding: 6px 16px; white-space: nowrap;">{{ tx.date|date:"Y-m-d" }}</td>
+                    <tr id="tx-row-{{ tx.id }}"
+                        data-action="{{ tx.action }}"
+                        data-deletable="{% if tx.action != 'transfer' and tx.action != 'withdraw' %}1{% else %}0{% endif %}">
+                        <td style="padding: 6px 8px;">
+                            {% if tx.action != 'transfer' and tx.action != 'withdraw' %}
+                            <input type="checkbox" class="hist-tx-checkbox" data-id="{{ tx.id }}"
+                                   onchange="onHistTxCheck()"
+                                   style="width:14px;height:14px;cursor:pointer;">
+                            {% else %}
+                            <span title="转入/转出受保护" style="color:var(--color-text-muted);font-size:0.85rem;">🔒</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding: 6px 8px; white-space: nowrap;">{{ tx.date|date:"Y-m-d" }}</td>
                         <td style="padding: 6px 4px;">
                             <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">{{ tx.get_action_display }}</span>
                         </td>
@@ -594,11 +623,70 @@ function deleteTx(id) {
         if (data.success) {
             showToast('已删除', 'success');
             document.getElementById('tx-row-' + id).remove();
+            onHistTxCheck();
         } else {
             showToast('删除失败: ' + data.error, 'error');
         }
     })
     .catch(e => showToast('请求失败', 'error'));
+}
+
+function toggleHistSelectAll(master) {
+    document.querySelectorAll('.hist-tx-checkbox').forEach(cb => {
+        cb.checked = master.checked;
+    });
+    onHistTxCheck();
+}
+
+function onHistTxCheck() {
+    const checked = document.querySelectorAll('.hist-tx-checkbox:checked');
+    const btn = document.getElementById('histBatchDeleteBtn');
+    if (btn) {
+        btn.style.display = checked.length > 0 ? '' : 'none';
+        btn.textContent = `🗑 删除选中 (${checked.length})`;
+    }
+    // Sync master checkbox
+    const all = document.querySelectorAll('.hist-tx-checkbox');
+    const master = document.getElementById('selectAllHistTx');
+    if (master) {
+        master.checked = all.length > 0 && checked.length === all.length;
+        master.indeterminate = checked.length > 0 && checked.length < all.length;
+    }
+}
+
+async function batchDeleteTxHistory() {
+    const checked = Array.from(document.querySelectorAll('.hist-tx-checkbox:checked'));
+    const ids = checked.map(cb => parseInt(cb.dataset.id));
+    if (!ids.length) return;
+
+    // 统计影响：sell/dividend 会影响总收益率
+    const impactCount = checked.filter(cb => {
+        const act = cb.closest('tr')?.dataset.action;
+        return act === 'sell' || act === 'dividend';
+    }).length;
+
+    let msg = `确定删除选中的 ${ids.length} 条记录？此操作不可撤销。`;
+    if (impactCount > 0) {
+        msg += `\n\n⚠️ 其中 ${impactCount} 条为卖出/分红，删除后总收益率与历史区间收益将重新计算（已实现盈亏/分红会从汇总中扣除）。`;
+    }
+    if (!confirm(msg)) return;
+
+    const resp = await fetch('{% url "assets:api_transaction_batch_delete" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}',
+        },
+        body: JSON.stringify({ ids }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+        showToast(`已删除 ${data.deleted} 条记录`, 'success');
+        checked.forEach(cb => cb.closest('tr')?.remove());
+        onHistTxCheck();
+    } else {
+        showToast(data.error || '批量删除失败', 'error');
+    }
 }
 
 function generateHistorySummary() {

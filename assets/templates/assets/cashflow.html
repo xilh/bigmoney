@@ -163,18 +163,89 @@
 
 <!-- Recent Transactions -->
 <div class="card animate-in stagger-4">
-    <div class="card-header" style="padding: 10px 16px;">
-        <h3>交易记录</h3>
-        <span class="text-xs text-muted">自动记录的买卖与资金流动</span>
+    <div class="card-header" style="padding: 10px 16px; gap: 12px; flex-wrap: wrap;">
+        <div>
+            <h3>交易记录</h3>
+            <span class="text-xs text-muted">自动记录的买卖与资金流动</span>
+        </div>
+        <!-- Filter bar -->
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-left:auto;">
+            <select id="filterSource" class="form-control" style="height:32px;font-size:0.8rem;padding:0 10px;width:auto;"
+                    onchange="applyTxFilters()">
+                <option value="">全部来源</option>
+                <option value="manual">手动</option>
+                <option value="ocr">OCR识别</option>
+                <option value="auto">自动</option>
+            </select>
+            <select id="filterAction" class="form-control" style="height:32px;font-size:0.8rem;padding:0 10px;width:auto;"
+                    onchange="applyTxFilters()">
+                <option value="">全部类型</option>
+                <option value="buy">买入</option>
+                <option value="sell">卖出</option>
+                <option value="transfer">转入</option>
+                <option value="withdraw">转出</option>
+                <option value="dividend">分红</option>
+            </select>
+            <select id="filterDate" class="form-control" style="height:32px;font-size:0.8rem;padding:0 10px;width:auto;"
+                    onchange="applyTxFilters()">
+                <option value="">全部日期</option>
+                <option value="today">今天</option>
+                <option value="week">近7天</option>
+                <option value="month">近30天</option>
+            </select>
+        </div>
     </div>
+
+    <!-- Bulk action bar (shown when rows selected) -->
+    <div id="bulkActionBar" style="
+        display:none; padding: 10px 16px;
+        background: rgba(239,68,68,0.08); border-bottom: 1px solid rgba(239,68,68,0.2);
+        flex-direction: column; gap: 8px;
+    ">
+        <div style="display:flex; align-items:center; gap:12px;">
+            <span id="bulkCount" style="font-size:0.85rem; font-weight:600; color:var(--color-text);">已选 0 条</span>
+            <span style="font-size:0.8rem; color:var(--color-text-muted);">（仅可删除买入/卖出/分红记录，转入/转出受保护）</span>
+            <button class="btn btn-sm btn-danger" onclick="batchDeleteSelected()" style="margin-left:auto;">
+                🗑 批量删除选中记录
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="clearSelection()">取消选择</button>
+        </div>
+        <div id="bulkImpactHint" style="
+            display:none; font-size:0.78rem; color:#dc2626; line-height:1.5;
+            padding: 6px 10px; background: rgba(239,68,68,0.06); border-radius: 6px;
+        ">
+            ⚠️ <strong>影响提示：</strong>选中包含
+            <span id="impactDetail"></span>
+            ，删除后总收益率与历史区间收益会重新计算（已实现盈亏/分红将从汇总中减去）。
+        </div>
+    </div>
+
     <div class="card-body" style="padding: 0;">
-        <table class="table">
+        <table class="table" id="txTable">
             <thead><tr>
-                <th>日期</th><th>类型</th><th>资产</th><th>金额</th><th>来源</th><th>备注</th>
+                <th style="width:36px;">
+                    <input type="checkbox" id="selectAllTx" onchange="toggleSelectAll(this)"
+                           style="width:15px;height:15px;cursor:pointer;">
+                </th>
+                <th>日期</th><th>类型</th><th>资产</th><th>金额</th><th>来源</th><th>备注</th><th></th>
             </tr></thead>
-            <tbody>
+            <tbody id="txTableBody">
             {% for tx in recent_transactions %}
-            <tr>
+            <tr class="tx-row"
+                data-id="{{ tx.id }}"
+                data-action="{{ tx.action }}"
+                data-source="{{ tx.source }}"
+                data-date="{{ tx.date }}"
+                data-deletable="{% if tx.action in 'buy,sell,dividend,rebalance' %}1{% else %}0{% endif %}">
+                <td>
+                    {% if tx.action != 'transfer' and tx.action != 'withdraw' %}
+                    <input type="checkbox" class="tx-checkbox" data-id="{{ tx.id }}"
+                           onchange="onTxCheck()"
+                           style="width:15px;height:15px;cursor:pointer;">
+                    {% else %}
+                    <span title="转入/转出记录受保护" style="color:var(--color-text-muted);font-size:1rem;line-height:1;">🔒</span>
+                    {% endif %}
+                </td>
                 <td style="white-space:nowrap;">{{ tx.date }}</td>
                 <td>
                     <span class="badge {% if tx.action == 'buy' or tx.action == 'transfer' %}badge-success{% elif tx.action == 'sell' or tx.action == 'withdraw' %}badge-danger{% else %}badge-neutral{% endif %}">
@@ -192,9 +263,15 @@
                 </td>
                 <td><span class="badge badge-neutral" style="font-size:0.65rem;">{{ tx.source_display }}</span></td>
                 <td class="text-xs text-muted">{{ tx.notes|truncatechars:30 }}</td>
+                <td>
+                    {% if tx.action != 'transfer' and tx.action != 'withdraw' %}
+                    <button class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:0.75rem;"
+                            onclick="deleteSingleTx({{ tx.id }}, this)">删除</button>
+                    {% endif %}
+                </td>
             </tr>
             {% empty %}
-            <tr><td colspan="6" class="text-center text-muted" style="padding: 32px;">暂无交易记录。上传截图识别持仓后将自动生成买卖记录。</td></tr>
+            <tr><td colspan="8" class="text-center text-muted" style="padding: 32px;">暂无交易记录。上传截图识别持仓后将自动生成买卖记录。</td></tr>
             {% endfor %}
             </tbody>
         </table>
@@ -303,6 +380,142 @@ async function dismissCashflowAlert(key) {
 
 // Init date
 document.getElementById('flowDate').value = new Date().toISOString().slice(0, 10);
+
+// ── Transaction table: filter, select, delete ──────────────────
+
+const today = new Date().toISOString().slice(0, 10);
+const weekAgo = new Date(Date.now() - 7*24*3600*1000).toISOString().slice(0,10);
+const monthAgo = new Date(Date.now() - 30*24*3600*1000).toISOString().slice(0,10);
+
+function applyTxFilters() {
+    const srcFilter = document.getElementById('filterSource').value;
+    const actFilter = document.getElementById('filterAction').value;
+    const dateFilter = document.getElementById('filterDate').value;
+
+    document.querySelectorAll('.tx-row').forEach(row => {
+        const src = row.dataset.source;
+        const act = row.dataset.action;
+        const dt  = row.dataset.date;
+
+        let show = true;
+        if (srcFilter && src !== srcFilter) show = false;
+        if (actFilter && act !== actFilter) show = false;
+        if (dateFilter === 'today'  && dt < today)   show = false;
+        if (dateFilter === 'week'   && dt < weekAgo)  show = false;
+        if (dateFilter === 'month'  && dt < monthAgo) show = false;
+
+        row.style.display = show ? '' : 'none';
+    });
+    // Reset selection after filter change
+    clearSelection();
+}
+
+function toggleSelectAll(master) {
+    document.querySelectorAll('.tx-checkbox').forEach(cb => {
+        // Only toggle visible rows
+        const row = cb.closest('tr');
+        if (row && row.style.display !== 'none') {
+            cb.checked = master.checked;
+        }
+    });
+    onTxCheck();
+}
+
+function onTxCheck() {
+    const checked = document.querySelectorAll('.tx-checkbox:checked');
+    const bar = document.getElementById('bulkActionBar');
+    const count = document.getElementById('bulkCount');
+    if (checked.length > 0) {
+        bar.style.display = 'flex';
+        count.textContent = `已选 ${checked.length} 条`;
+        // 检测选中是否包含会影响总收益的类型（sell with realized_pnl, dividend）
+        const impactTypes = { sell: 0, dividend: 0 };
+        checked.forEach(cb => {
+            const row = cb.closest('tr');
+            const act = row?.dataset.action;
+            if (act === 'sell') impactTypes.sell++;
+            else if (act === 'dividend') impactTypes.dividend++;
+        });
+        const hint = document.getElementById('bulkImpactHint');
+        const detail = document.getElementById('impactDetail');
+        if (impactTypes.sell > 0 || impactTypes.dividend > 0) {
+            const parts = [];
+            if (impactTypes.sell > 0) parts.push(`<strong>${impactTypes.sell} 条卖出记录</strong>`);
+            if (impactTypes.dividend > 0) parts.push(`<strong>${impactTypes.dividend} 条分红记录</strong>`);
+            detail.innerHTML = parts.join(' 和 ');
+            hint.style.display = 'block';
+        } else {
+            hint.style.display = 'none';
+        }
+    } else {
+        bar.style.display = 'none';
+    }
+    // Update master checkbox state
+    const all = document.querySelectorAll('.tx-checkbox');
+    const visible = Array.from(all).filter(cb => cb.closest('tr').style.display !== 'none');
+    const master = document.getElementById('selectAllTx');
+    if (master) {
+        master.checked = visible.length > 0 && visible.every(cb => cb.checked);
+        master.indeterminate = checked.length > 0 && !master.checked;
+    }
+}
+
+function clearSelection() {
+    document.querySelectorAll('.tx-checkbox').forEach(cb => cb.checked = false);
+    const master = document.getElementById('selectAllTx');
+    if (master) { master.checked = false; master.indeterminate = false; }
+    document.getElementById('bulkActionBar').style.display = 'none';
+}
+
+async function batchDeleteSelected() {
+    const checked = Array.from(document.querySelectorAll('.tx-checkbox:checked'));
+    const ids = checked.map(cb => parseInt(cb.dataset.id));
+    if (!ids.length) return;
+
+    // 统计影响：sell/dividend 会影响总收益率
+    const impactCount = checked.filter(cb => {
+        const act = cb.closest('tr')?.dataset.action;
+        return act === 'sell' || act === 'dividend';
+    }).length;
+
+    let msg = `确定删除选中的 ${ids.length} 条交易记录？此操作不可撤销。`;
+    if (impactCount > 0) {
+        msg += `\n\n⚠️ 其中 ${impactCount} 条为卖出/分红记录，删除后已实现盈亏/分红将从总收益中扣除，可能导致历史区间收益数据失真。`;
+    }
+    if (!confirm(msg)) return;
+
+    const resp = await fetch('{% url "assets:api_transaction_batch_delete" %}', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','X-CSRFToken': csrfToken},
+        body: JSON.stringify({ids}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+        if (typeof showToast === 'function') showToast(`已删除 ${data.deleted} 条记录`, 'success');
+        // Remove rows from DOM
+        checked.forEach(cb => cb.closest('tr')?.remove());
+        clearSelection();
+    } else {
+        alert(data.error || '批量删除失败');
+    }
+}
+
+async function deleteSingleTx(id, btn) {
+    if (!confirm('确定删除该条交易记录？')) return;
+    btn.disabled = true;
+    const resp = await fetch(`/api/transaction/${id}/delete/`, {
+        method: 'DELETE',
+        headers: {'X-CSRFToken': csrfToken},
+    });
+    const data = await resp.json();
+    if (data.success) {
+        btn.closest('tr')?.remove();
+        if (typeof showToast === 'function') showToast('已删除', 'success');
+    } else {
+        btn.disabled = false;
+        alert(data.error || '删除失败');
+    }
+}
 
 // Monthly Chart
 const monthlyData = JSON.parse('{{ monthly_json|escapejs }}');
