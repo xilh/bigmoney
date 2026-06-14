@@ -15,6 +15,10 @@ db.sqlite3
 # Media uploads
 media/
 
+# Runtime logs
+logs/
+*.log
+
 # IDE
 .idea/
 .vscode/
