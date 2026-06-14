@@ -497,6 +497,104 @@ class SnapshotHoldingsCostTest(TestCase):
         self.assertEqual(item['current_price'], 22.0)
 
 
+class IntegrityCheckTest(TestCase):
+    """数据完整性自检服务。"""
+
+    def setUp(self):
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+
+    def test_all_pass_for_clean_data(self):
+        Holding.objects.create(
+            layer=self.layer, name='X',
+            quantity=Decimal('100'), cost_price=Decimal('10'),
+            current_price=Decimal('12'),
+        )
+        from .services.integrity import run_integrity_checks
+        result = run_integrity_checks()
+        # 没有快照 → warning；其它应 pass
+        self.assertIn(result['overall'], ('pass', 'warning'))
+        names = {c['name'] for c in result['checks']}
+        self.assertIn('持仓与层级合计', names)
+        self.assertIn('卖出记录已实现盈亏完整性', names)
+
+    def test_future_date_transaction_fails(self):
+        Transaction.objects.create(
+            action='buy', asset_name='Y', amount=Decimal('1000'),
+            date=timezone.localdate() + timedelta(days=5),
+        )
+        from .services.integrity import run_integrity_checks
+        result = run_integrity_checks()
+        future_check = next(c for c in result['checks'] if c['name'] == '无未来日期交易')
+        self.assertEqual(future_check['status'], 'fail')
+        self.assertEqual(result['overall'], 'fail')
+
+    def test_sell_without_realized_pnl_warns(self):
+        Transaction.objects.create(
+            action='sell', asset_name='Z',
+            quantity=Decimal('10'), price=Decimal('10'),
+            amount=Decimal('100'),
+            realized_pnl=None,
+            date=timezone.localdate(),
+        )
+        from .services.integrity import run_integrity_checks
+        result = run_integrity_checks()
+        pnl_check = next(c for c in result['checks'] if c['name'] == '卖出记录已实现盈亏完整性')
+        self.assertEqual(pnl_check['status'], 'warning')
+
+
+class SellValidationTest(TestCase):
+    """卖出严格校验：超额请求应明确拒绝。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.layer = AssetLayer.objects.create(
+            name='测试层', target_ratio=20, color='#000', order=1,
+        )
+        self.client = Client()
+
+    def test_sell_qty_exceeds_holding_rejected(self):
+        h = Holding.objects.create(
+            layer=self.layer, name='W',
+            quantity=Decimal('10'), cost_price=Decimal('10'),
+            current_price=Decimal('15'),
+        )
+        from django.test.utils import override_settings
+        import json as _json
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post(
+                f'/api/holding/{h.id}/sell/',
+                data=_json.dumps({'quantity': '20', 'amount': '300'}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body.get('code'), 'INVALID_INPUT')
+        # 持仓应保持不变
+        h.refresh_from_db()
+        self.assertEqual(h.quantity, Decimal('10'))
+
+
+class ApiErrorEnvelopeTest(TestCase):
+    """API 错误响应应带结构化 code/message，不暴露 traceback。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.client = Client()
+
+    def test_not_found_returns_structured_error(self):
+        from django.test.utils import override_settings
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.delete('/api/holding/99999/delete/')
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['code'], 'NOT_FOUND')
+        self.assertIn('message', body)
+
+
 class TransactionUpdateRecalcTest(TestCase):
     """api_transaction_update 改 amount 时应让 quantity*price 与 realized_pnl 自洽。"""
 

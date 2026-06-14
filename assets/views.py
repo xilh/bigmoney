@@ -29,6 +29,7 @@ from .services.rebalance import (
 )
 from .services.advisor import evaluate_portfolio, evaluate_asset
 from .services.ledger import snapshot_holding, record_holding_change, record_holding_removal
+from .api_utils import api_endpoint, ApiError, invalid_input, not_found, conflict
 
 
 class DecimalEncoder(DjangoJSONEncoder):
@@ -433,776 +434,734 @@ def settings_page(request):
 # ==================== API 端点 ====================
 
 @require_POST
+@api_endpoint
 def api_holding_create(request):
     """创建持仓"""
-    try:
-        data = json.loads(request.body)
-        layer = get_object_or_404(AssetLayer, id=data['layer_id'])
+    data = json.loads(request.body)
+    layer = get_object_or_404(AssetLayer, id=data['layer_id'])
 
-        quantity = Decimal(str(data.get('quantity', 0)))
-        cost_price = Decimal(str(data['cost_price'])) if data.get('cost_price') else None
-        current_price = Decimal(str(data['current_price'])) if data.get('current_price') else None
-        market_value = Decimal(str(data.get('market_value', 0)))
+    quantity = Decimal(str(data.get('quantity', 0)))
+    cost_price = Decimal(str(data['cost_price'])) if data.get('cost_price') else None
+    current_price = Decimal(str(data['current_price'])) if data.get('current_price') else None
+    market_value = Decimal(str(data.get('market_value', 0)))
 
-        # Validate non-negative
-        if quantity < 0 or market_value < 0:
-            return JsonResponse({'success': False, 'error': '数量和市值不能为负数'}, status=400)
-        if cost_price is not None and cost_price < 0:
-            return JsonResponse({'success': False, 'error': '成本价不能为负数'}, status=400)
+    # Validate non-negative
+    if quantity < 0 or market_value < 0:
+        raise invalid_input('数量和市值不能为负数')
+    if cost_price is not None and cost_price < 0:
+        raise invalid_input('成本价不能为负数')
 
-        holding = Holding(
-            layer=layer,
-            name=data['name'],
-            code=data.get('code', ''),
-            asset_type=data.get('asset_type', 'other'),
-            quantity=quantity,
-            cost_price=cost_price,
-            current_price=current_price,
-            market_value=market_value,
-            source=data.get('source', 'manual'),
-            platform=data.get('platform', ''),
-            notes=data.get('notes', ''),
-        )
-        # save() will auto-calculate P&L if price info exists;
-        # if no price info, the directly-provided market_value is preserved.
-        holding.save()
+    holding = Holding(
+        layer=layer,
+        name=data['name'],
+        code=data.get('code', ''),
+        asset_type=data.get('asset_type', 'other'),
+        quantity=quantity,
+        cost_price=cost_price,
+        current_price=current_price,
+        market_value=market_value,
+        source=data.get('source', 'manual'),
+        platform=data.get('platform', ''),
+        notes=data.get('notes', ''),
+    )
+    # save() 会自动计算盈亏；缺价格信息时保留传入的 market_value
+    holding.save()
 
-        record_holding_change(holding, old_data=None, source='manual')
+    record_holding_change(holding, old_data=None, source='manual')
 
-        return JsonResponse({'success': True, 'id': holding.id})
-    except (ValueError, KeyError) as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
-    except Exception as e:
-        logger.exception("api_holding_create failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    return JsonResponse({'success': True, 'id': holding.id})
 
 
 @require_http_methods(["PUT"])
+@api_endpoint
 def api_holding_update(request, holding_id):
     """更新持仓"""
-    try:
-        holding = get_object_or_404(Holding, id=holding_id)
-        data = json.loads(request.body)
+    holding = get_object_or_404(Holding, id=holding_id)
+    data = json.loads(request.body)
 
-        # 数据修正模式：只更新数值，不写台账交易记录
-        is_correction = bool(data.get('is_correction', False))
+    # 数据修正模式：只更新数值，不写台账交易记录
+    is_correction = bool(data.get('is_correction', False))
 
-        old_data = snapshot_holding(holding)
+    old_data = snapshot_holding(holding)
 
-        if 'layer_id' in data:
-            holding.layer = get_object_or_404(AssetLayer, id=data['layer_id'])
-        if 'name' in data:
-            holding.name = data['name']
-        if 'code' in data:
-            holding.code = data['code']
-        if 'asset_type' in data:
-            holding.asset_type = data['asset_type']
-        if 'quantity' in data:
-            holding.quantity = Decimal(str(data['quantity'])) if data['quantity'] else Decimal('0')
-        if 'cost_price' in data:
-            holding.cost_price = Decimal(str(data['cost_price'])) if data['cost_price'] else None
-        if 'current_price' in data:
-            holding.current_price = Decimal(str(data['current_price'])) if data['current_price'] else None
-        if 'market_value' in data:
-            holding.market_value = Decimal(str(data['market_value'])) if data['market_value'] else Decimal('0')
-        if 'notes' in data:
-            holding.notes = data['notes']
-        if 'platform' in data:
-            holding.platform = data['platform']
+    if 'layer_id' in data:
+        holding.layer = get_object_or_404(AssetLayer, id=data['layer_id'])
+    if 'name' in data:
+        holding.name = data['name']
+    if 'code' in data:
+        holding.code = data['code']
+    if 'asset_type' in data:
+        holding.asset_type = data['asset_type']
+    if 'quantity' in data:
+        holding.quantity = Decimal(str(data['quantity'])) if data['quantity'] else Decimal('0')
+    if 'cost_price' in data:
+        holding.cost_price = Decimal(str(data['cost_price'])) if data['cost_price'] else None
+    if 'current_price' in data:
+        holding.current_price = Decimal(str(data['current_price'])) if data['current_price'] else None
+    if 'market_value' in data:
+        holding.market_value = Decimal(str(data['market_value'])) if data['market_value'] else Decimal('0')
+    if 'notes' in data:
+        holding.notes = data['notes']
+    if 'platform' in data:
+        holding.platform = data['platform']
 
-        holding.save()
+    # 数值合法性
+    if holding.quantity is not None and holding.quantity < 0:
+        raise invalid_input('数量不能为负数')
+    if holding.cost_price is not None and holding.cost_price < 0:
+        raise invalid_input('成本价不能为负数')
+    if holding.current_price is not None and holding.current_price < 0:
+        raise invalid_input('当前价不能为负数')
 
-        if not is_correction:
-            record_holding_change(holding, old_data, source='manual')
-        else:
-            logger.info("Correction mode: skipped ledger write for holding #%d (%s)", holding.id, holding.name)
+    holding.save()
 
-        return JsonResponse({'success': True, 'is_correction': is_correction})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    if not is_correction:
+        record_holding_change(holding, old_data, source='manual')
+    else:
+        logger.info("Correction mode: skipped ledger write for holding #%d (%s)", holding.id, holding.name)
+
+    return JsonResponse({'success': True, 'is_correction': is_correction})
 
 
 @require_http_methods(["DELETE"])
+@api_endpoint
 def api_holding_delete(request, holding_id):
     """删除持仓"""
-    try:
-        holding = get_object_or_404(Holding, id=holding_id)
-        # 数据修正模式：直接删除，不写台账
-        is_correction = request.GET.get('correction') == '1'
-        if not is_correction:
-            try:
-                body = json.loads(request.body)
-                is_correction = bool(body.get('is_correction', False))
-            except Exception:
-                pass
-        if not is_correction:
-            record_holding_removal(holding, source='manual')
-        else:
-            logger.info("Correction mode: skipped ledger removal for holding #%d (%s)", holding.id, holding.name)
-        holding.delete()
-        return JsonResponse({'success': True, 'is_correction': is_correction})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    holding = get_object_or_404(Holding, id=holding_id)
+    # 数据修正模式：直接删除，不写台账。fetch DELETE 在多数浏览器会丢 body，统一走 query 参数。
+    is_correction = request.GET.get('correction') == '1'
+    if not is_correction:
+        record_holding_removal(holding, source='manual')
+    else:
+        logger.info("Correction mode: skipped ledger removal for holding #%d (%s)", holding.id, holding.name)
+    holding.delete()
+    return JsonResponse({'success': True, 'is_correction': is_correction})
 
 
 @require_POST
+@api_endpoint
 def api_holding_sell(request, holding_id):
     """卖出持仓"""
-    try:
-        holding = get_object_or_404(Holding, id=holding_id)
-        data = json.loads(request.body)
-        
-        sell_qty = Decimal(str(data.get('quantity', 0) or 0))
-        sell_amount = Decimal(str(data.get('amount', 0) or 0))
-        
-        if sell_amount <= 0:
-            return JsonResponse({'success': False, 'error': '卖出金额必须大于0'}, status=400)
-            
-        if sell_qty < 0:
-            return JsonResponse({'success': False, 'error': '卖出数量不能为负'}, status=400)
-            
-        if sell_qty == 0 and holding.quantity > 0:
-            return JsonResponse({'success': False, 'error': '由于存在持仓份额，卖出数量必须大于0'}, status=400)
-            
-        sell_price = sell_amount / sell_qty if sell_qty > 0 else Decimal('0')
-        cost_price = holding.cost_price or Decimal('0')
-        
-        if sell_qty == 0:
-            approx_cost = holding.market_value if holding.market_value else Decimal('0')
-            realized_pnl = sell_amount - approx_cost
+    holding = get_object_or_404(Holding, id=holding_id)
+    data = json.loads(request.body)
+
+    sell_qty = Decimal(str(data.get('quantity', 0) or 0))
+    sell_amount = Decimal(str(data.get('amount', 0) or 0))
+    # 用户在 UI 上明确选择"清仓"时传 confirm_close_all=True
+    confirm_close_all = bool(data.get('confirm_close_all', False))
+
+    if sell_amount <= 0:
+        raise invalid_input('卖出金额必须大于0')
+
+    if sell_qty < 0:
+        raise invalid_input('卖出数量不能为负')
+
+    if sell_qty == 0 and holding.quantity > 0:
+        raise invalid_input('由于存在持仓份额，卖出数量必须大于0')
+
+    # 严格校验：卖出数量不能超过持仓
+    if sell_qty > 0 and sell_qty > holding.quantity:
+        raise invalid_input(
+            f'卖出数量 {sell_qty} 超过当前持仓 {holding.quantity}，请核对后再试'
+        )
+
+    sell_price = sell_amount / sell_qty if sell_qty > 0 else Decimal('0')
+    cost_price = holding.cost_price or Decimal('0')
+
+    if sell_qty == 0:
+        approx_cost = holding.market_value if holding.market_value else Decimal('0')
+        realized_pnl = sell_amount - approx_cost
+    else:
+        realized_pnl = sell_amount - (cost_price * sell_qty)
+
+    # 判断是否清仓（数量相等或前端明确传 confirm_close_all）
+    is_close_all = (sell_qty > 0 and sell_qty == holding.quantity) or confirm_close_all
+    if is_close_all:
+        # 清仓
+        from .services.ledger import Transaction
+        Transaction.objects.create(
+            holding=None,
+            action='sell',
+            asset_name=holding.name,
+            quantity=sell_qty,
+            price=sell_price,
+            amount=sell_amount,
+            date=timezone.localdate(),
+            source='manual',
+            realized_pnl=realized_pnl,
+            platform=holding.platform,
+            notes='清仓卖出'
+        )
+        holding.delete()
+    else:
+        # 部分卖出
+        from .services.ledger import Transaction
+        Transaction.objects.create(
+            holding=holding,
+            action='sell',
+            asset_name=holding.name,
+            quantity=sell_qty,
+            price=sell_price,
+            amount=sell_amount,
+            date=timezone.localdate(),
+            source='manual',
+            realized_pnl=realized_pnl,
+            platform=holding.platform,
+            notes='部分卖出'
+        )
+        # 更新持仓信息
+        original_qty = holding.quantity
+        holding.quantity -= sell_qty
+        # 市值：优先用 current_price 重算；如无现价，按剩余份额比例缩减原市值
+        current_price = holding.current_price or Decimal('0')
+        if current_price > 0:
+            holding.market_value = (current_price * holding.quantity).quantize(Decimal('0.01'))
+        elif original_qty > 0:
+            ratio = holding.quantity / original_qty
+            holding.market_value = (holding.market_value * ratio).quantize(Decimal('0.01'))
+        # 盈亏重新计算：当前市值 - (剩余数量 * 成本价)
+        remaining_cost = holding.quantity * cost_price
+        holding.profit_loss = holding.market_value - remaining_cost
+        if remaining_cost > 0:
+            holding.profit_loss_pct = (holding.profit_loss / remaining_cost * 100).quantize(Decimal('0.0001'))
         else:
-            realized_pnl = sell_amount - (cost_price * sell_qty)
-        
-        # 判断是否清仓
-        if sell_qty >= holding.quantity:
-            # 清仓
-            from .services.ledger import Transaction
-            Transaction.objects.create(
-                holding=None,
-                action='sell',
-                asset_name=holding.name,
-                quantity=sell_qty,
-                price=sell_price,
-                amount=sell_amount,
-                date=timezone.localdate(),
-                source='manual',
-                realized_pnl=realized_pnl,
-                platform=holding.platform,
-                notes='清仓卖出'
-            )
-            holding.delete()
-        else:
-            # 部分卖出
-            from .services.ledger import Transaction
-            Transaction.objects.create(
-                holding=holding,
-                action='sell',
-                asset_name=holding.name,
-                quantity=sell_qty,
-                price=sell_price,
-                amount=sell_amount,
-                date=timezone.localdate(),
-                source='manual',
-                realized_pnl=realized_pnl,
-                platform=holding.platform,
-                notes='部分卖出'
-            )
-            # 更新持仓信息
-            original_qty = holding.quantity
-            holding.quantity -= sell_qty
-            # 市值：优先用 current_price 重算；如无现价，按剩余份额比例缩减原市值
-            current_price = holding.current_price or Decimal('0')
-            if current_price > 0:
-                holding.market_value = (current_price * holding.quantity).quantize(Decimal('0.01'))
-            elif original_qty > 0:
-                ratio = holding.quantity / original_qty
-                holding.market_value = (holding.market_value * ratio).quantize(Decimal('0.01'))
-            # else: 保留原 market_value（不太可能进入此分支）
-            # 盈亏重新计算：当前市值 - (剩余数量 * 成本价)
-            remaining_cost = holding.quantity * cost_price
-            holding.profit_loss = holding.market_value - remaining_cost
-            if remaining_cost > 0:
-                holding.profit_loss_pct = (holding.profit_loss / remaining_cost * 100).quantize(Decimal('0.0001'))
-            else:
-                holding.profit_loss_pct = Decimal('0')
-            # 阻止触发自动台账
-            holding.save(update_fields=['quantity', 'market_value', 'profit_loss', 'profit_loss_pct', 'updated_at'])
-            
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+            holding.profit_loss_pct = Decimal('0')
+        # 阻止触发自动台账
+        holding.save(update_fields=['quantity', 'market_value', 'profit_loss', 'profit_loss_pct', 'updated_at'])
+
+    return JsonResponse({'success': True})
 
 
 @require_POST
+@api_endpoint
 def api_transaction_create(request):
     """记录一笔资金出入"""
-    try:
-        data = json.loads(request.body)
-        action = data.get('action')
-        asset_name = data.get('asset_name')
-        amount = Decimal(str(data.get('amount', 0)))
-        today = timezone.localdate()
-        tx_date = data.get('date') or today.isoformat()
+    data = json.loads(request.body)
+    action = data.get('action')
+    asset_name = data.get('asset_name')
+    amount = Decimal(str(data.get('amount', 0)))
+    today = timezone.localdate()
+    tx_date = data.get('date') or today.isoformat()
 
-        if not action or not asset_name or amount <= 0:
-            return JsonResponse({'success': False, 'error': '请提供完整的资金记录信息'}, status=400)
+    if not action or not asset_name or amount <= 0:
+        raise invalid_input('请提供完整的资金记录信息')
 
-        parsed_date = date.fromisoformat(tx_date)
-        if parsed_date > today:
-            return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
+    parsed_date = date.fromisoformat(tx_date)
+    if parsed_date > today:
+        raise invalid_input('操作日期不能是未来日期')
 
-        Transaction.objects.create(
-            action=action,
-            asset_name=asset_name,
-            amount=amount,
-            date=parsed_date,
-        )
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    Transaction.objects.create(
+        action=action,
+        asset_name=asset_name,
+        amount=amount,
+        date=parsed_date,
+    )
+    return JsonResponse({'success': True})
 
 
 @require_POST
+@api_endpoint
 def api_transaction_update(request, tx_id):
     """更新操作日志（支持完整字段编辑，并自动维护 quantity*price 与 realized_pnl 自洽）"""
-    try:
-        tx = get_object_or_404(Transaction, id=tx_id)
-        data = json.loads(request.body)
+    tx = get_object_or_404(Transaction, id=tx_id)
+    data = json.loads(request.body)
 
-        if 'action' in data:
-            tx.action = data['action']
-        if 'asset_name' in data:
-            tx.asset_name = data['asset_name']
-        if 'date' in data:
-            parsed_date = date.fromisoformat(data['date'])
-            if parsed_date > timezone.localdate():
-                return JsonResponse({'success': False, 'error': '操作日期不能是未来日期'}, status=400)
-            tx.date = parsed_date
-        if 'notes' in data:
-            tx.notes = data['notes']
-        if 'platform' in data:
-            tx.platform = data['platform']
+    if 'action' in data:
+        tx.action = data['action']
+    if 'asset_name' in data:
+        tx.asset_name = data['asset_name']
+    if 'date' in data:
+        parsed_date = date.fromisoformat(data['date'])
+        if parsed_date > timezone.localdate():
+            raise invalid_input('操作日期不能是未来日期')
+        tx.date = parsed_date
+    if 'notes' in data:
+        tx.notes = data['notes']
+    if 'platform' in data:
+        tx.platform = data['platform']
 
-        # quantity/price/amount/realized_pnl 互相影响，按提供字段顺序统一更新
-        qty_provided = 'quantity' in data
-        price_provided = 'price' in data
-        amount_provided = 'amount' in data
-        realized_provided = 'realized_pnl' in data
+    # quantity/price/amount/realized_pnl 互相影响，按提供字段顺序统一更新
+    qty_provided = 'quantity' in data
+    price_provided = 'price' in data
+    amount_provided = 'amount' in data
+    realized_provided = 'realized_pnl' in data
 
-        if qty_provided:
-            tx.quantity = Decimal(str(data['quantity'] or 0))
-        if price_provided:
-            tx.price = Decimal(str(data['price'] or 0))
-        if amount_provided:
-            tx.amount = Decimal(str(data['amount']))
-            # 用户改了 amount 但没改 quantity → 根据 amount/quantity 反推 price，保持自洽
-            if not price_provided and tx.quantity and tx.quantity > 0:
-                tx.price = (tx.amount / tx.quantity).quantize(Decimal('0.0001'))
-        elif qty_provided and price_provided:
-            # 提供了数量和价格但没显式给 amount → 自动算出
-            tx.amount = (tx.quantity * tx.price).quantize(Decimal('0.01'))
+    if qty_provided:
+        tx.quantity = Decimal(str(data['quantity'] or 0))
+    if price_provided:
+        tx.price = Decimal(str(data['price'] or 0))
+    if amount_provided:
+        tx.amount = Decimal(str(data['amount']))
+        # 用户改了 amount 但没改 quantity → 根据 amount/quantity 反推 price，保持自洽
+        if not price_provided and tx.quantity and tx.quantity > 0:
+            tx.price = (tx.amount / tx.quantity).quantize(Decimal('0.0001'))
+    elif qty_provided and price_provided:
+        # 提供了数量和价格但没显式给 amount → 自动算出
+        tx.amount = (tx.quantity * tx.price).quantize(Decimal('0.01'))
 
-        # realized_pnl 处理
-        if realized_provided:
-            # 显式提供 → 直接使用
-            v = data['realized_pnl']
-            tx.realized_pnl = Decimal(str(v)) if v not in (None, '') else None
-        elif tx.action == 'sell' and (amount_provided or qty_provided or price_provided):
-            # 卖出记录金额/数量变了，且用户没显式提供 realized_pnl
-            # → 根据原 realized_pnl 与原 amount 的比例推算（保留盈亏率）
-            #   若原始 realized_pnl 为空则不动
-            if tx.realized_pnl is not None:
-                # 用 (amount - cost_implied) 估算；cost_implied = 原 amount - 原 realized
-                old_tx = Transaction.objects.get(pk=tx.pk)
-                old_amount = old_tx.amount or Decimal('0')
-                old_realized = old_tx.realized_pnl or Decimal('0')
-                cost_implied = old_amount - old_realized
-                if old_amount > 0 and tx.quantity and old_tx.quantity:
-                    # 卖出成本按数量比例缩放
-                    new_cost = cost_implied * (tx.quantity / old_tx.quantity) if old_tx.quantity else cost_implied
-                else:
-                    new_cost = cost_implied
-                tx.realized_pnl = (tx.amount - new_cost).quantize(Decimal('0.01'))
+    # realized_pnl 处理
+    if realized_provided:
+        v = data['realized_pnl']
+        tx.realized_pnl = Decimal(str(v)) if v not in (None, '') else None
+    elif tx.action == 'sell' and (amount_provided or qty_provided or price_provided):
+        # 卖出记录金额/数量变了，且用户没显式提供 realized_pnl → 按比例重算
+        if tx.realized_pnl is not None:
+            old_tx = Transaction.objects.get(pk=tx.pk)
+            old_amount = old_tx.amount or Decimal('0')
+            old_realized = old_tx.realized_pnl or Decimal('0')
+            cost_implied = old_amount - old_realized
+            if old_amount > 0 and tx.quantity and old_tx.quantity:
+                new_cost = cost_implied * (tx.quantity / old_tx.quantity) if old_tx.quantity else cost_implied
+            else:
+                new_cost = cost_implied
+            tx.realized_pnl = (tx.amount - new_cost).quantize(Decimal('0.01'))
 
-        tx.save()
-        return JsonResponse({
-            'success': True,
-            'tx': {
-                'id': tx.id,
-                'amount': float(tx.amount),
-                'quantity': float(tx.quantity) if tx.quantity else None,
-                'price': float(tx.price) if tx.price else None,
-                'realized_pnl': float(tx.realized_pnl) if tx.realized_pnl is not None else None,
-            }
-        })
-    except Exception as e:
-        logger.exception("api_transaction_update failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    tx.save()
+    return JsonResponse({
+        'success': True,
+        'tx': {
+            'id': tx.id,
+            'amount': float(tx.amount),
+            'quantity': float(tx.quantity) if tx.quantity else None,
+            'price': float(tx.price) if tx.price else None,
+            'realized_pnl': float(tx.realized_pnl) if tx.realized_pnl is not None else None,
+        }
+    })
 
 
 @require_http_methods(["DELETE"])
+@api_endpoint
 def api_transaction_delete(request, tx_id):
     """删除操作日志"""
-    try:
-        tx = get_object_or_404(Transaction, id=tx_id)
-        tx.delete()
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    tx = get_object_or_404(Transaction, id=tx_id)
+    tx.delete()
+    return JsonResponse({'success': True})
 
 
 @require_POST
+@api_endpoint
 def api_transaction_batch_delete(request):
     """批量删除交易记录"""
-    try:
-        data = json.loads(request.body)
-        ids = data.get('ids', [])
-        if not ids or not isinstance(ids, list):
-            return JsonResponse({'success': False, 'error': '请提供要删除的记录 ID 列表'}, status=400)
-        # 只允许删除 buy/sell/dividend（不允许批量删 transfer/withdraw，那些是资金记录）
-        qs = Transaction.objects.filter(id__in=ids, action__in=['buy', 'sell', 'dividend', 'rebalance'])
-        count, _ = qs.delete()
-        logger.info("Batch deleted %d transactions: %s", count, ids)
-        return JsonResponse({'success': True, 'deleted': count})
-    except Exception as e:
-        logger.exception("api_transaction_batch_delete failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    data = json.loads(request.body)
+    ids = data.get('ids', [])
+    if not ids or not isinstance(ids, list):
+        raise invalid_input('请提供要删除的记录 ID 列表')
+    # 只允许删除 buy/sell/dividend/rebalance（转入/转出为资金记录，受保护）
+    qs = Transaction.objects.filter(id__in=ids, action__in=['buy', 'sell', 'dividend', 'rebalance'])
+    count, _ = qs.delete()
+    logger.info("Batch deleted %d transactions: %s", count, ids)
+    return JsonResponse({'success': True, 'deleted': count})
 
 
 @require_POST
+@api_endpoint
 def api_upload_screenshot(request):
     """上传并识别截图"""
-    try:
-        if 'image' not in request.FILES:
-            return JsonResponse({'success': False, 'error': '未上传图片'}, status=400)
+    if 'image' not in request.FILES:
+        raise invalid_input('未上传图片')
 
-        image_file = request.FILES['image']
-        upload = Upload.objects.create(
-            image=image_file,
-            status='processing',
-        )
+    image_file = request.FILES['image']
+    upload = Upload.objects.create(
+        image=image_file,
+        status='processing',
+    )
 
-        # 获取 LLM 配置（统一键名）
-        provider = Setting.get('llm_provider', 'openai_compatible')
-        api_key = Setting.get('llm_api_key', '')
-        api_url = Setting.get('llm_api_url', '')
-        model = Setting.get('llm_model', '')
+    # 获取 LLM 配置（统一键名）
+    provider = Setting.get('llm_provider', 'openai_compatible')
+    api_key = Setting.get('llm_api_key', '')
+    api_url = Setting.get('llm_api_url', '')
+    model = Setting.get('llm_model', '')
 
-        if provider == 'anthropic' and not api_key and not api_url:
-            upload.status = 'failed'
-            upload.error_message = '未配置 AI 模型，请先在设置中配置'
-            upload.save()
-            return JsonResponse({'success': False, 'error': '未配置 AI 模型，请先在设置中配置'}, status=400)
-        elif provider == 'openai_compatible' and not api_url:
-            upload.status = 'failed'
-            upload.error_message = '未配置 API 地址，请先在设置中配置'
-            upload.save()
-            return JsonResponse({'success': False, 'error': '未配置 API 地址，请先在设置中配置'}, status=400)
-
-        # 获取保存后的文件路径
-        image_path = os.path.join(django_settings.MEDIA_ROOT, upload.image.name)
-        llm_max_tokens = int(Setting.get('llm_max_tokens', '2048'))
-
-        # 查询已有持仓数据，传给 LLM 做去重匹配
-        existing_holdings = list(
-            Holding.objects.values('name', 'platform', 'asset_type').distinct()
-        )
-
-        result = recognize_screenshot(
-            image_path, api_key,
-            provider=provider,
-            api_url=api_url,
-            model=model,
-            max_tokens=llm_max_tokens,
-            existing_holdings=existing_holdings,
-        )
-
-        if result['success']:
-            upload.recognized_data = result['data']
-            upload.platform = result.get('platform', '')
-            upload.status = 'recognized'
-        else:
-            upload.status = 'failed'
-            upload.error_message = result['error']
-
+    if provider == 'anthropic' and not api_key and not api_url:
+        upload.status = 'failed'
+        upload.error_message = '未配置 AI 模型，请先在设置中配置'
         upload.save()
+        raise invalid_input('未配置 AI 模型，请先在设置中配置')
+    elif provider == 'openai_compatible' and not api_url:
+        upload.status = 'failed'
+        upload.error_message = '未配置 API 地址，请先在设置中配置'
+        upload.save()
+        raise invalid_input('未配置 API 地址，请先在设置中配置')
 
-        missing_holdings = []
-        platform = result.get('platform', '')
-        if result['success'] and platform:
-            ocr_names = {item['name'] for item in result.get('data', []) if 'name' in item}
-            missing_qs = Holding.objects.filter(platform=platform).exclude(name__in=ocr_names)
-            for h in missing_qs:
-                missing_holdings.append({
-                    'id': h.id,
-                    'name': h.name,
-                    'quantity': float(h.quantity) if h.quantity else 0,
-                    'market_value': float(h.market_value) if h.market_value else 0
-                })
+    # 获取保存后的文件路径
+    image_path = os.path.join(django_settings.MEDIA_ROOT, upload.image.name)
+    llm_max_tokens = int(Setting.get('llm_max_tokens', '2048'))
 
-        return JsonResponse({
-            'success': result['success'],
-            'upload_id': upload.id,
-            'data': result['data'],
-            'platform': platform,
-            'error': result.get('error', ''),
-            'existing_holdings': existing_holdings,
-            'missing_holdings': missing_holdings,
-        })
-    except Exception as e:
-        logger.exception("api_upload_screenshot failed")
-        return JsonResponse({'success': False, 'error': f'识别过程出错: {type(e).__name__}'}, status=500)
+    # 查询已有持仓数据，传给 LLM 做去重匹配
+    existing_holdings = list(
+        Holding.objects.values('name', 'platform', 'asset_type').distinct()
+    )
 
+    result = recognize_screenshot(
+        image_path, api_key,
+        provider=provider,
+        api_url=api_url,
+        model=model,
+        max_tokens=llm_max_tokens,
+        existing_holdings=existing_holdings,
+    )
 
-@require_POST
-def api_confirm_upload(request):
-    """确认截图识别结果，写入持仓"""
-    try:
-        data = json.loads(request.body)
-        upload_id = data.get('upload_id')
-        items = data.get('items', [])
-        platform = data.get('platform', '')
+    if result['success']:
+        upload.recognized_data = result['data']
+        upload.platform = result.get('platform', '')
+        upload.status = 'recognized'
+    else:
+        upload.status = 'failed'
+        upload.error_message = result['error']
 
-        if upload_id:
-            upload = get_object_or_404(Upload, id=upload_id)
-            if upload.status == 'confirmed':
-                return JsonResponse({
-                    'success': False,
-                    'error': '该截图已确认过，不可重复确认。如需更新数据请重新上传。',
-                }, status=400)
+    upload.save()
 
-        created_count = 0
-        updated_count = 0
-
-        # 自动备份必须在 atomic 块之外创建，否则 confirm 失败时备份也会被回滚 → 失去保险作用
-        last_auto = SystemBackup.objects.filter(is_auto=True).order_by('-created_at').first()
-        if not last_auto or (timezone.now() - last_auto.created_at).total_seconds() > 600:
-            holdings_for_backup = Holding.objects.all()
-            backup_data = [{
-                'layer_id': h.layer_id,
-                'name': h.name,
-                'code': h.code,
-                'asset_type': h.asset_type,
-                'quantity': float(h.quantity) if h.quantity is not None else 0,
-                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
-                'current_price': float(h.current_price) if h.current_price is not None else None,
-                'market_value': float(h.market_value) if h.market_value is not None else 0,
-                'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
-                'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
-                'source': h.source,
-                'platform': h.platform,
-                'is_reserve': h.is_reserve,
-                'notes': h.notes,
-            } for h in holdings_for_backup]
-            SystemBackup.objects.create(name='自动备份 (导入前)', data=backup_data, is_auto=True)
-
-            # 只保留最近 10 份自动备份
-            auto_backups = SystemBackup.objects.filter(is_auto=True).order_by('-created_at')[10:]
-            for b in auto_backups:
-                b.delete()
-
-        with transaction.atomic():
-            if upload_id:
-                upload.status = 'confirmed'
-                if platform:
-                    upload.platform = platform
-                upload.save()
-
-            for item in items:
-                layer_id = item.get('layer_id')
-                if not layer_id:
-                    suggested = item.get('suggested_layer', 1)
-                    layer = AssetLayer.objects.filter(order=suggested).first()
-                    if not layer:
-                        layer = AssetLayer.objects.first()
-                else:
-                    layer = get_object_or_404(AssetLayer, id=layer_id)
-
-                item_platform = item.get('platform', platform)
-
-                holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
-                holding_existed = holding is not None
-
-                code = item.get('code', '')
-                asset_type = item.get('asset_type', 'other')
-                quantity = Decimal(str(item.get('quantity', 0)))
-                cost_price = Decimal(str(item['cost_price'])) if item.get('cost_price') else None
-                current_price = Decimal(str(item['current_price'])) if item.get('current_price') else None
-                market_value = Decimal(str(item.get('market_value', 0)))
-                profit_loss = Decimal(str(item.get('profit_loss', 0)))
-                profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
-
-                has_price_info = bool(cost_price and current_price and quantity)
-
-                if holding:
-                    old_data = snapshot_holding(holding)
-                    if code:
-                        holding.code = code
-                    holding.asset_type = asset_type
-                    holding.quantity = quantity
-                    holding.cost_price = cost_price
-                    holding.current_price = current_price
-                    if not has_price_info:
-                        holding.market_value = market_value
-                        holding.profit_loss = profit_loss
-                        holding.profit_loss_pct = profit_loss_pct
-                    holding.source = 'screenshot'
-                    holding.save()
-                    if not has_price_info and item.get('market_value'):
-                        # save() 可能已从 market_value/profit_loss 反推了成本和收益率
-                        # 仅回写 save() 不会覆盖的原始 market_value 和 profit_loss
-                        update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
-                        if not holding.cost_price:
-                            # save() 没能反推成本（如 profit_loss 为 0），保留 OCR 提供的收益率
-                            update_fields['profit_loss_pct'] = profit_loss_pct
-                        Holding.objects.filter(pk=holding.pk).update(**update_fields)
-                    record_holding_change(holding, old_data, source='ocr')
-                    updated_count += 1
-                else:
-                    holding = Holding(
-                        layer=layer,
-                        name=item['name'],
-                        code=code,
-                        asset_type=asset_type,
-                        quantity=quantity,
-                        cost_price=cost_price,
-                        current_price=current_price,
-                        market_value=market_value,
-                        profit_loss=profit_loss,
-                        profit_loss_pct=profit_loss_pct,
-                        source='screenshot',
-                        platform=item_platform,
-                    )
-                    holding.save()
-                    if not has_price_info and item.get('market_value'):
-                        update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
-                        if not holding.cost_price:
-                            update_fields['profit_loss_pct'] = profit_loss_pct
-                        Holding.objects.filter(pk=holding.pk).update(**update_fields)
-                    record_holding_change(holding, old_data=None, source='ocr')
-                    created_count += 1
-
-            # Process holdings explicitly marked as sold by the user
-            missing_sold_ids = data.get('missing_sold_ids', [])
-            removed_count = 0
-            if missing_sold_ids:
-                for h_id in missing_sold_ids:
-                    h = Holding.objects.filter(id=h_id).first()
-                    if h:
-                        record_holding_removal(h, source='ocr')
-                        h.delete()
-                        removed_count += 1
-
-        result = {'success': True, 'created': created_count, 'updated': updated_count}
-        if removed_count:
-            result['removed'] = removed_count
-        return JsonResponse(result)
-    except (ValueError, KeyError) as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
-    except Exception as e:
-        logger.exception("api_confirm_upload failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
-
-
-@require_POST
-def api_snapshot_create(request):
-    """创建资产快照"""
-    try:
-        layers_data, total_value = _get_layers_summary()
-        layer_values = {ld['name']: ld['actual_value'] for ld in layers_data}
-        layer_ratios = {ld['name']: ld['actual_ratio'] for ld in layers_data}
-
-        # 保存每笔持仓明细，用于快照对比与事后重算
-        # 含 cost_price/quantity/current_price 以便日后重新核算已实现盈亏与区间收益
-        holdings = Holding.objects.select_related('layer').all()
-        holdings_data = [
-            {
+    missing_holdings = []
+    platform = result.get('platform', '')
+    if result['success'] and platform:
+        ocr_names = {item['name'] for item in result.get('data', []) if 'name' in item}
+        missing_qs = Holding.objects.filter(platform=platform).exclude(name__in=ocr_names)
+        for h in missing_qs:
+            missing_holdings.append({
                 'id': h.id,
                 'name': h.name,
-                'code': h.code,
-                'layer': h.layer.name,
-                'platform': h.platform,
-                'asset_type': h.asset_type,
-                'quantity': float(h.quantity) if h.quantity is not None else 0,
-                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
-                'current_price': float(h.current_price) if h.current_price is not None else None,
-                'market_value': float(h.market_value or 0),
-                'profit_loss': float(h.profit_loss or 0),
-                'profit_loss_pct': float(h.profit_loss_pct or 0),
-            }
-            for h in holdings
-        ]
+                'quantity': float(h.quantity) if h.quantity else 0,
+                'market_value': float(h.market_value) if h.market_value else 0
+            })
 
-        # 完整性校验：持仓明细合计 vs 层级合计
-        holdings_sum = sum(h['market_value'] for h in holdings_data)
-        layers_sum = sum(layer_values.values())
-        integrity_ok = abs(holdings_sum - layers_sum) < 1.0  # 允许1元舍入误差
+    return JsonResponse({
+        'success': result['success'],
+        'upload_id': upload.id,
+        'data': result['data'],
+        'platform': platform,
+        'error': result.get('error', ''),
+        'existing_holdings': existing_holdings,
+        'missing_holdings': missing_holdings,
+    })
 
-        data = json.loads(request.body) if request.body else {}
 
-        snapshot = Snapshot.objects.create(
-            date=data.get('date') or timezone.now(),
-            total_value=total_value,
-            layer_values=layer_values,
-            layer_ratios=layer_ratios,
-            holdings_data=holdings_data,
-            notes=data.get('notes', ''),
-        )
+@require_POST
+@api_endpoint
+def api_confirm_upload(request):
+    """确认截图识别结果，写入持仓"""
+    data = json.loads(request.body)
+    upload_id = data.get('upload_id')
+    items = data.get('items', [])
+    platform = data.get('platform', '')
 
-        warning = None
-        if not integrity_ok:
-            diff = holdings_sum - layers_sum
-            warning = f'数据完整性警告：持仓明细合计与层级合计差 ¥{diff:,.0f}，可能存在重复或遗漏持仓'
-            logger.warning("Snapshot integrity check failed: holdings_sum=%.2f, layers_sum=%.2f, diff=%.2f",
-                           holdings_sum, layers_sum, diff)
+    if upload_id:
+        upload = get_object_or_404(Upload, id=upload_id)
+        if upload.status == 'confirmed':
+            raise conflict('该截图已确认过，不可重复确认。如需更新数据请重新上传。')
 
-        result = {
-            'success': True,
-            'id': snapshot.id,
-            'total_value': total_value,
+    created_count = 0
+    updated_count = 0
+    removed_count = 0
+
+    # 自动备份必须在 atomic 块之外创建，否则 confirm 失败时备份也会被回滚 → 失去保险作用
+    last_auto = SystemBackup.objects.filter(is_auto=True).order_by('-created_at').first()
+    if not last_auto or (timezone.now() - last_auto.created_at).total_seconds() > 600:
+        holdings_for_backup = Holding.objects.all()
+        backup_data = [{
+            'layer_id': h.layer_id,
+            'name': h.name,
+            'code': h.code,
+            'asset_type': h.asset_type,
+            'quantity': float(h.quantity) if h.quantity is not None else 0,
+            'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+            'current_price': float(h.current_price) if h.current_price is not None else None,
+            'market_value': float(h.market_value) if h.market_value is not None else 0,
+            'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+            'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+            'source': h.source,
+            'platform': h.platform,
+            'is_reserve': h.is_reserve,
+            'notes': h.notes,
+        } for h in holdings_for_backup]
+        SystemBackup.objects.create(name='自动备份 (导入前)', data=backup_data, is_auto=True)
+
+        # 只保留最近 10 份自动备份
+        auto_backups = SystemBackup.objects.filter(is_auto=True).order_by('-created_at')[10:]
+        for b in auto_backups:
+            b.delete()
+
+    with transaction.atomic():
+        if upload_id:
+            upload.status = 'confirmed'
+            if platform:
+                upload.platform = platform
+            upload.save()
+
+        for item in items:
+            layer_id = item.get('layer_id')
+            if not layer_id:
+                suggested = item.get('suggested_layer', 1)
+                layer = AssetLayer.objects.filter(order=suggested).first()
+                if not layer:
+                    layer = AssetLayer.objects.first()
+            else:
+                layer = get_object_or_404(AssetLayer, id=layer_id)
+
+            item_platform = item.get('platform', platform)
+
+            holding = Holding.objects.filter(name=item['name'], platform=item_platform).first()
+
+            code = item.get('code', '')
+            asset_type = item.get('asset_type', 'other')
+            quantity = Decimal(str(item.get('quantity', 0)))
+            cost_price = Decimal(str(item['cost_price'])) if item.get('cost_price') else None
+            current_price = Decimal(str(item['current_price'])) if item.get('current_price') else None
+            market_value = Decimal(str(item.get('market_value', 0)))
+            profit_loss = Decimal(str(item.get('profit_loss', 0)))
+            profit_loss_pct = Decimal(str(item.get('profit_loss_pct', 0)))
+
+            has_price_info = bool(cost_price and current_price and quantity)
+
+            if holding:
+                old_data = snapshot_holding(holding)
+                if code:
+                    holding.code = code
+                holding.asset_type = asset_type
+                holding.quantity = quantity
+                holding.cost_price = cost_price
+                holding.current_price = current_price
+                if not has_price_info:
+                    holding.market_value = market_value
+                    holding.profit_loss = profit_loss
+                    holding.profit_loss_pct = profit_loss_pct
+                holding.source = 'screenshot'
+                holding.save()
+                if not has_price_info and item.get('market_value'):
+                    # save() 可能已从 market_value/profit_loss 反推了成本和收益率
+                    # 仅回写 save() 不会覆盖的原始 market_value 和 profit_loss
+                    update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
+                    if not holding.cost_price:
+                        update_fields['profit_loss_pct'] = profit_loss_pct
+                    Holding.objects.filter(pk=holding.pk).update(**update_fields)
+                record_holding_change(holding, old_data, source='ocr')
+                updated_count += 1
+            else:
+                holding = Holding(
+                    layer=layer,
+                    name=item['name'],
+                    code=code,
+                    asset_type=asset_type,
+                    quantity=quantity,
+                    cost_price=cost_price,
+                    current_price=current_price,
+                    market_value=market_value,
+                    profit_loss=profit_loss,
+                    profit_loss_pct=profit_loss_pct,
+                    source='screenshot',
+                    platform=item_platform,
+                )
+                holding.save()
+                if not has_price_info and item.get('market_value'):
+                    update_fields = {'market_value': market_value, 'profit_loss': profit_loss}
+                    if not holding.cost_price:
+                        update_fields['profit_loss_pct'] = profit_loss_pct
+                    Holding.objects.filter(pk=holding.pk).update(**update_fields)
+                record_holding_change(holding, old_data=None, source='ocr')
+                created_count += 1
+
+        # Process holdings explicitly marked as sold by the user
+        missing_sold_ids = data.get('missing_sold_ids', [])
+        if missing_sold_ids:
+            for h_id in missing_sold_ids:
+                h = Holding.objects.filter(id=h_id).first()
+                if h:
+                    record_holding_removal(h, source='ocr')
+                    h.delete()
+                    removed_count += 1
+
+    result = {'success': True, 'created': created_count, 'updated': updated_count}
+    if removed_count:
+        result['removed'] = removed_count
+    return JsonResponse(result)
+
+
+@require_POST
+@api_endpoint
+def api_snapshot_create(request):
+    """创建资产快照"""
+    layers_data, total_value = _get_layers_summary()
+    layer_values = {ld['name']: ld['actual_value'] for ld in layers_data}
+    layer_ratios = {ld['name']: ld['actual_ratio'] for ld in layers_data}
+
+    # 保存每笔持仓明细，用于快照对比与事后重算
+    # 含 cost_price/quantity/current_price 以便日后重新核算已实现盈亏与区间收益
+    holdings = Holding.objects.select_related('layer').all()
+    holdings_data = [
+        {
+            'id': h.id,
+            'name': h.name,
+            'code': h.code,
+            'layer': h.layer.name,
+            'platform': h.platform,
+            'asset_type': h.asset_type,
+            'quantity': float(h.quantity) if h.quantity is not None else 0,
+            'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+            'current_price': float(h.current_price) if h.current_price is not None else None,
+            'market_value': float(h.market_value or 0),
+            'profit_loss': float(h.profit_loss or 0),
+            'profit_loss_pct': float(h.profit_loss_pct or 0),
         }
-        if warning:
-            result['warning'] = warning
-        return JsonResponse(result)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+        for h in holdings
+    ]
+
+    # 完整性校验：持仓明细合计 vs 层级合计
+    holdings_sum = sum(h['market_value'] for h in holdings_data)
+    layers_sum = sum(layer_values.values())
+    integrity_ok = abs(holdings_sum - layers_sum) < 1.0  # 允许1元舍入误差
+
+    data = json.loads(request.body) if request.body else {}
+
+    snapshot = Snapshot.objects.create(
+        date=data.get('date') or timezone.now(),
+        total_value=total_value,
+        layer_values=layer_values,
+        layer_ratios=layer_ratios,
+        holdings_data=holdings_data,
+        notes=data.get('notes', ''),
+    )
+
+    warning = None
+    if not integrity_ok:
+        diff = holdings_sum - layers_sum
+        warning = f'数据完整性警告：持仓明细合计与层级合计差 ¥{diff:,.0f}，可能存在重复或遗漏持仓'
+        logger.warning("Snapshot integrity check failed: holdings_sum=%.2f, layers_sum=%.2f, diff=%.2f",
+                       holdings_sum, layers_sum, diff)
+
+    result = {
+        'success': True,
+        'id': snapshot.id,
+        'total_value': total_value,
+    }
+    if warning:
+        result['warning'] = warning
+    return JsonResponse(result)
 
 
 @require_http_methods(["DELETE"])
+@api_endpoint
 def api_snapshot_delete(request, snapshot_id):
     """删除资产快照"""
-    try:
-        snapshot = get_object_or_404(Snapshot, id=snapshot_id)
-        snapshot.delete()
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    snapshot = get_object_or_404(Snapshot, id=snapshot_id)
+    snapshot.delete()
+    return JsonResponse({'success': True})
 
 
+@api_endpoint
 def api_snapshot_compare(request):
     """对比两个快照，找出持仓变动"""
-    try:
-        old_id = request.GET.get('old')
-        new_id = request.GET.get('new')
-        if not old_id or not new_id:
-            return JsonResponse({'success': False, 'error': '需要提供 old 和 new 快照ID'}, status=400)
+    old_id = request.GET.get('old')
+    new_id = request.GET.get('new')
+    if not old_id or not new_id:
+        raise invalid_input('需要提供 old 和 new 快照ID')
 
-        old_snap = get_object_or_404(Snapshot, id=old_id)
-        new_snap = get_object_or_404(Snapshot, id=new_id)
+    old_snap = get_object_or_404(Snapshot, id=old_id)
+    new_snap = get_object_or_404(Snapshot, id=new_id)
 
-        old_holdings = {h['name']: h for h in (old_snap.holdings_data or [])}
-        new_holdings = {h['name']: h for h in (new_snap.holdings_data or [])}
+    old_holdings = {h['name']: h for h in (old_snap.holdings_data or [])}
+    new_holdings = {h['name']: h for h in (new_snap.holdings_data or [])}
 
-        all_names = sorted(set(list(old_holdings.keys()) + list(new_holdings.keys())))
+    all_names = sorted(set(list(old_holdings.keys()) + list(new_holdings.keys())))
 
-        changes = []
-        for name in all_names:
-            old_h = old_holdings.get(name)
-            new_h = new_holdings.get(name)
+    changes = []
+    for name in all_names:
+        old_h = old_holdings.get(name)
+        new_h = new_holdings.get(name)
 
-            old_val = old_h['market_value'] if old_h else 0
-            new_val = new_h['market_value'] if new_h else 0
-            diff = new_val - old_val
+        old_val = old_h['market_value'] if old_h else 0
+        new_val = new_h['market_value'] if new_h else 0
+        diff = new_val - old_val
 
-            if old_h and not new_h:
-                status = 'removed'
-            elif new_h and not old_h:
-                status = 'added'
-            elif abs(diff) < 0.01:
-                status = 'unchanged'
-            else:
-                status = 'changed'
+        if old_h and not new_h:
+            status = 'removed'
+        elif new_h and not old_h:
+            status = 'added'
+        elif abs(diff) < 0.01:
+            status = 'unchanged'
+        else:
+            status = 'changed'
 
-            changes.append({
-                'name': name,
-                'layer': (new_h or old_h).get('layer', ''),
-                'platform': (new_h or old_h).get('platform', ''),
-                'old_value': round(old_val, 2),
-                'new_value': round(new_val, 2),
-                'diff': round(diff, 2),
-                'status': status,
-            })
-
-        # 按变动金额排序，亏损最多的排前面
-        changes.sort(key=lambda x: x['diff'])
-
-        return JsonResponse({
-            'success': True,
-            'old_date': timezone.localtime(old_snap.date).strftime('%Y-%m-%d %H:%M'),
-            'new_date': timezone.localtime(new_snap.date).strftime('%Y-%m-%d %H:%M'),
-            'old_total': float(old_snap.total_value),
-            'new_total': float(new_snap.total_value),
-            'total_diff': float(new_snap.total_value - old_snap.total_value),
-            'changes': changes,
+        changes.append({
+            'name': name,
+            'layer': (new_h or old_h).get('layer', ''),
+            'platform': (new_h or old_h).get('platform', ''),
+            'old_value': round(old_val, 2),
+            'new_value': round(new_val, 2),
+            'diff': round(diff, 2),
+            'status': status,
         })
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    # 按变动金额排序，亏损最多的排前面
+    changes.sort(key=lambda x: x['diff'])
+
+    return JsonResponse({
+        'success': True,
+        'old_date': timezone.localtime(old_snap.date).strftime('%Y-%m-%d %H:%M'),
+        'new_date': timezone.localtime(new_snap.date).strftime('%Y-%m-%d %H:%M'),
+        'old_total': float(old_snap.total_value),
+        'new_total': float(new_snap.total_value),
+        'total_diff': float(new_snap.total_value - old_snap.total_value),
+        'changes': changes,
+    })
 
 
 @require_POST
+@api_endpoint
 def api_checklist_complete(request):
     """保存检视清单完成记录"""
-    try:
-        data = json.loads(request.body)
-        record = ChecklistRecord.objects.create(
-            period_type=data['period_type'],
-            completed_items=data.get('completed_items', []),
-            total_items=data.get('total_items', 0),
-            notes=data.get('notes', ''),
-        )
-        return JsonResponse({'success': True, 'id': record.id})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    data = json.loads(request.body)
+    record = ChecklistRecord.objects.create(
+        period_type=data['period_type'],
+        completed_items=data.get('completed_items', []),
+        total_items=data.get('total_items', 0),
+        notes=data.get('notes', ''),
+    )
+    return JsonResponse({'success': True, 'id': record.id})
 
 
 @require_POST
+@api_endpoint
 def api_settings_save(request):
     """保存设置"""
-    try:
-        data = json.loads(request.body)
+    data = json.loads(request.body)
 
-        # OCR LLM 配置（统一键名）
-        for key in ('llm_mode', 'llm_provider', 'llm_api_url', 'llm_api_key',
-                     'llm_model', 'llm_cloud_provider'):
-            if key in data:
-                Setting.set(key, data[key])
-        if 'llm_max_tokens' in data:
-            Setting.set('llm_max_tokens', str(data['llm_max_tokens']))
+    # OCR LLM 配置（统一键名）
+    for key in ('llm_mode', 'llm_provider', 'llm_api_url', 'llm_api_key',
+                 'llm_model', 'llm_cloud_provider'):
+        if key in data:
+            Setting.set(key, data[key])
+    if 'llm_max_tokens' in data:
+        Setting.set('llm_max_tokens', str(data['llm_max_tokens']))
 
-        # AI 顾问配置（统一键名）
-        for key in ('advisor_mode', 'advisor_llm_provider', 'advisor_api_url',
-                     'advisor_api_key', 'advisor_model', 'advisor_cloud_provider'):
-            if key in data:
-                Setting.set(key, data[key])
-        if 'advisor_max_tokens' in data:
-            Setting.set('advisor_max_tokens', str(data['advisor_max_tokens']))
+    # AI 顾问配置（统一键名）
+    for key in ('advisor_mode', 'advisor_llm_provider', 'advisor_api_url',
+                 'advisor_api_key', 'advisor_model', 'advisor_cloud_provider'):
+        if key in data:
+            Setting.set(key, data[key])
+    if 'advisor_max_tokens' in data:
+        Setting.set('advisor_max_tokens', str(data['advisor_max_tokens']))
 
-        if 'layers' in data:
-            for layer_data in data['layers']:
-                layer = get_object_or_404(AssetLayer, id=layer_data['id'])
-                layer.target_ratio = float(layer_data['target_ratio'])
-                layer.save()
+    if 'layers' in data:
+        for layer_data in data['layers']:
+            layer = get_object_or_404(AssetLayer, id=layer_data['id'])
+            layer.target_ratio = float(layer_data['target_ratio'])
+            layer.save()
 
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    return JsonResponse({'success': True})
 
 
+@api_endpoint
 def api_performance_calc(request):
     """计算指定区间的投资回报率"""
-    try:
-        from .services.performance import calculate_interval_performance
-        
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
+    from .services.performance import calculate_interval_performance
 
-        if not start_date or not end_date:
-            return JsonResponse({'success': False, 'error': 'Missing start_date or end_date'}, status=400)
+    start_date = request.GET.get('start_date')
+    end_date = request.GET.get('end_date')
 
-        result = calculate_interval_performance(start_date, end_date)
-        return JsonResponse({'success': True, 'data': result})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    if not start_date or not end_date:
+        raise invalid_input('需要提供 start_date 和 end_date 参数')
+
+    result = calculate_interval_performance(start_date, end_date)
+    return JsonResponse({'success': True, 'data': result})
 
 
 def api_export_data(request):
@@ -1247,48 +1206,46 @@ def api_export_holdings_csv(request):
 
 
 @require_POST
+@api_endpoint
 def api_import_data(request):
     """从 JSON 导入数据"""
-    try:
-        data = json.loads(request.body)
+    data = json.loads(request.body)
 
-        # 导入层级设置
-        if 'layers' in data:
-            for ld in data['layers']:
-                AssetLayer.objects.update_or_create(
-                    id=ld['id'],
-                    defaults={
-                        'name': ld['name'],
-                        'target_ratio': ld['target_ratio'],
-                        'description': ld.get('description', ''),
-                        'color': ld.get('color', '#3b82f6'),
-                        'order': ld.get('order', 0),
-                    }
+    # 导入层级设置
+    if 'layers' in data:
+        for ld in data['layers']:
+            AssetLayer.objects.update_or_create(
+                id=ld['id'],
+                defaults={
+                    'name': ld['name'],
+                    'target_ratio': ld['target_ratio'],
+                    'description': ld.get('description', ''),
+                    'color': ld.get('color', '#3b82f6'),
+                    'order': ld.get('order', 0),
+                }
+            )
+
+    # 导入持仓
+    if 'holdings' in data:
+        for hd in data['holdings']:
+            layer = AssetLayer.objects.filter(id=hd.get('layer_id')).first()
+            if layer:
+                Holding.objects.create(
+                    layer=layer,
+                    name=hd['name'],
+                    code=hd.get('code', ''),
+                    asset_type=hd.get('asset_type', 'other'),
+                    quantity=hd.get('quantity', 0),
+                    cost_price=hd.get('cost_price'),
+                    current_price=hd.get('current_price'),
+                    market_value=hd.get('market_value', 0),
+                    profit_loss=hd.get('profit_loss', 0),
+                    profit_loss_pct=hd.get('profit_loss_pct', 0),
+                    source=hd.get('source', 'manual'),
+                    notes=hd.get('notes', ''),
                 )
 
-        # 导入持仓
-        if 'holdings' in data:
-            for hd in data['holdings']:
-                layer = AssetLayer.objects.filter(id=hd.get('layer_id')).first()
-                if layer:
-                    Holding.objects.create(
-                        layer=layer,
-                        name=hd['name'],
-                        code=hd.get('code', ''),
-                        asset_type=hd.get('asset_type', 'other'),
-                        quantity=hd.get('quantity', 0),
-                        cost_price=hd.get('cost_price'),
-                        current_price=hd.get('current_price'),
-                        market_value=hd.get('market_value', 0),
-                        profit_loss=hd.get('profit_loss', 0),
-                        profit_loss_pct=hd.get('profit_loss_pct', 0),
-                        source=hd.get('source', 'manual'),
-                        notes=hd.get('notes', ''),
-                    )
-
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    return JsonResponse({'success': True})
 
 
 def api_backup_list(request):
@@ -1305,12 +1262,41 @@ def api_backup_list(request):
 
 
 @require_POST
+@api_endpoint
 def api_backup_create(request):
     """手动创建系统备份"""
-    try:
-        data = json.loads(request.body) if request.body else {}
-        name = data.get('name') or f"手动备份 {timezone.now().strftime('%Y-%m-%d %H:%M')}"
-        
+    data = json.loads(request.body) if request.body else {}
+    name = data.get('name') or f"手动备份 {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+
+    holdings = Holding.objects.all()
+    backup_data = [{
+        'layer_id': h.layer_id,
+        'name': h.name,
+        'code': h.code,
+        'asset_type': h.asset_type,
+        'quantity': float(h.quantity) if h.quantity is not None else 0,
+        'cost_price': float(h.cost_price) if h.cost_price is not None else None,
+        'current_price': float(h.current_price) if h.current_price is not None else None,
+        'market_value': float(h.market_value) if h.market_value is not None else 0,
+        'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
+        'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
+        'source': h.source,
+        'platform': h.platform,
+        'is_reserve': h.is_reserve,
+        'notes': h.notes,
+    } for h in holdings]
+
+    backup = SystemBackup.objects.create(name=name, data=backup_data, is_auto=False)
+    return JsonResponse({'success': True, 'id': backup.id})
+
+
+@require_POST
+@api_endpoint
+def api_backup_restore(request, backup_id):
+    """从指定备份恢复系统持仓"""
+    backup = get_object_or_404(SystemBackup, id=backup_id)
+    with transaction.atomic():
+        # 1. 自动创建一个恢复前的备份，以防万一
         holdings = Holding.objects.all()
         backup_data = [{
             'layer_id': h.layer_id,
@@ -1328,80 +1314,45 @@ def api_backup_create(request):
             'is_reserve': h.is_reserve,
             'notes': h.notes,
         } for h in holdings]
-        
-        backup = SystemBackup.objects.create(name=name, data=backup_data, is_auto=False)
-        return JsonResponse({'success': True, 'id': backup.id})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+        SystemBackup.objects.create(name='恢复前备份', data=backup_data, is_auto=True)
 
+        # 2. 删除当前所有持仓
+        Holding.objects.all().delete()
 
-@require_POST
-def api_backup_restore(request, backup_id):
-    """从指定备份恢复系统持仓"""
-    try:
-        backup = get_object_or_404(SystemBackup, id=backup_id)
-        with transaction.atomic():
-            # 1. 自动创建一个恢复前的备份，以防万一
-            holdings = Holding.objects.all()
-            backup_data = [{
-                'layer_id': h.layer_id,
-                'name': h.name,
-                'code': h.code,
-                'asset_type': h.asset_type,
-                'quantity': float(h.quantity) if h.quantity is not None else 0,
-                'cost_price': float(h.cost_price) if h.cost_price is not None else None,
-                'current_price': float(h.current_price) if h.current_price is not None else None,
-                'market_value': float(h.market_value) if h.market_value is not None else 0,
-                'profit_loss': float(h.profit_loss) if h.profit_loss is not None else 0,
-                'profit_loss_pct': float(h.profit_loss_pct) if h.profit_loss_pct is not None else 0,
-                'source': h.source,
-                'platform': h.platform,
-                'is_reserve': h.is_reserve,
-                'notes': h.notes,
-            } for h in holdings]
-            SystemBackup.objects.create(name=f"恢复前备份", data=backup_data, is_auto=True)
+        # 3. 恢复备份的持仓
+        restore_holdings = []
+        for item in backup.data:
+            layer_id = item.get('layer_id')
+            layer = AssetLayer.objects.filter(id=layer_id).first() if layer_id else AssetLayer.objects.first()
+            if layer:
+                restore_holdings.append(Holding(
+                    layer=layer,
+                    name=item.get('name', ''),
+                    code=item.get('code', ''),
+                    asset_type=item.get('asset_type', 'other'),
+                    quantity=item.get('quantity', 0),
+                    cost_price=item.get('cost_price'),
+                    current_price=item.get('current_price'),
+                    market_value=item.get('market_value', 0),
+                    profit_loss=item.get('profit_loss', 0),
+                    profit_loss_pct=item.get('profit_loss_pct', 0),
+                    source=item.get('source', 'manual'),
+                    platform=item.get('platform', ''),
+                    is_reserve=item.get('is_reserve', False),
+                    notes=item.get('notes', ''),
+                ))
+        Holding.objects.bulk_create(restore_holdings)
 
-            # 2. 删除当前所有持仓
-            Holding.objects.all().delete()
-
-            # 3. 恢复备份的持仓
-            restore_holdings = []
-            for item in backup.data:
-                layer_id = item.get('layer_id')
-                layer = AssetLayer.objects.filter(id=layer_id).first() if layer_id else AssetLayer.objects.first()
-                if layer:
-                    restore_holdings.append(Holding(
-                        layer=layer,
-                        name=item.get('name', ''),
-                        code=item.get('code', ''),
-                        asset_type=item.get('asset_type', 'other'),
-                        quantity=item.get('quantity', 0),
-                        cost_price=item.get('cost_price'),
-                        current_price=item.get('current_price'),
-                        market_value=item.get('market_value', 0),
-                        profit_loss=item.get('profit_loss', 0),
-                        profit_loss_pct=item.get('profit_loss_pct', 0),
-                        source=item.get('source', 'manual'),
-                        platform=item.get('platform', ''),
-                        is_reserve=item.get('is_reserve', False),
-                        notes=item.get('notes', ''),
-                    ))
-            Holding.objects.bulk_create(restore_holdings)
-
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    return JsonResponse({'success': True})
 
 
 @require_http_methods(["DELETE"])
+@api_endpoint
 def api_backup_delete(request, backup_id):
     """删除系统备份"""
-    try:
-        backup = get_object_or_404(SystemBackup, id=backup_id)
-        backup.delete()
-        return JsonResponse({'success': True})
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    backup = get_object_or_404(SystemBackup, id=backup_id)
+    backup.delete()
+    return JsonResponse({'success': True})
 
 
 def advisor_page(request):
@@ -1460,210 +1411,203 @@ def advisor_report_detail(request, report_id):
 
 
 @require_POST
+@api_endpoint
 def api_advisor_evaluate(request):
     """调用 AI 顾问评估投资组合"""
-    try:
-        layers_data, total_value = _get_layers_summary()
+    layers_data, total_value = _get_layers_summary()
 
-        if total_value <= 0:
-            return JsonResponse({'success': False, 'error': '当前无持仓数据，请先添加持仓'}, status=400)
+    if total_value <= 0:
+        raise invalid_input('当前无持仓数据，请先添加持仓')
 
-        # Build holdings data for the advisor
-        holdings = Holding.objects.select_related('layer').all()
-        holdings_data = []
-        for h in holdings:
-            asset_type_display = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
-            holdings_data.append({
-                'name': h.name,
-                'code': h.code,
-                'asset_type': h.asset_type,
-                'asset_type_display': asset_type_display,
-                'layer_name': h.layer.name,
-                'platform': h.platform,
-                'market_value': float(h.market_value or 0),
-                'profit_loss': float(h.profit_loss or 0),
-                'profit_loss_pct': float(h.profit_loss_pct or 0),
-                'quantity': float(h.quantity or 0),
-                'cost_price': float(h.cost_price) if h.cost_price else None,
-                'current_price': float(h.current_price) if h.current_price else None,
-            })
+    # Build holdings data for the advisor
+    holdings = Holding.objects.select_related('layer').all()
+    holdings_data = []
+    for h in holdings:
+        asset_type_display = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
+        holdings_data.append({
+            'name': h.name,
+            'code': h.code,
+            'asset_type': h.asset_type,
+            'asset_type_display': asset_type_display,
+            'layer_name': h.layer.name,
+            'platform': h.platform,
+            'market_value': float(h.market_value or 0),
+            'profit_loss': float(h.profit_loss or 0),
+            'profit_loss_pct': float(h.profit_loss_pct or 0),
+            'quantity': float(h.quantity or 0),
+            'cost_price': float(h.cost_price) if h.cost_price else None,
+            'current_price': float(h.current_price) if h.current_price else None,
+        })
 
-        result = evaluate_portfolio(layers_data, holdings_data, total_value)
+    result = evaluate_portfolio(layers_data, holdings_data, total_value)
 
-        # 成功时保存报告
-        if result.get('success') and 'data' in result:
-            data = result['data']
-            summary_data = data.get('portfolio_summary', {})
-            holdings_d = data.get('holdings', [])
-            score = summary_data.get('score', 0)
-            overall_health = summary_data.get('overall_health', 'unknown')
+    # 成功时保存报告
+    if result.get('success') and 'data' in result:
+        data = result['data']
+        summary_data = data.get('portfolio_summary', {})
+        holdings_d = data.get('holdings', [])
+        score = summary_data.get('score', 0)
+        overall_health = summary_data.get('overall_health', 'unknown')
 
-            report = EvaluationReport.objects.create(
-                total_value=total_value,
-                score=score,
-                overall_health=overall_health,
-                summary_data=summary_data,
-                holdings_data=holdings_d
-            )
-            result['data']['date'] = report.date.isoformat()
+        report = EvaluationReport.objects.create(
+            total_value=total_value,
+            score=score,
+            overall_health=overall_health,
+            summary_data=summary_data,
+            holdings_data=holdings_d
+        )
+        result['data']['date'] = report.date.isoformat()
 
-        return JsonResponse(result)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    return JsonResponse(result)
 
 
 @require_POST
+@api_endpoint
 def api_advisor_recommend_assets(request):
     """调用 AI 为特定层级推荐可以买入的资产"""
-    try:
-        data = json.loads(request.body)
-        layer_name = data.get('layer_name')
-        buy_amount = float(data.get('buy_amount', 0))
-        
-        if not layer_name or buy_amount <= 0:
-            return JsonResponse({'success': False, 'error': '无效的层级名称或买入金额'}, status=400)
-            
-        layer = AssetLayer.objects.filter(name=layer_name).first()
-        if not layer:
-            return JsonResponse({'success': False, 'error': '层级不存在'}, status=400)
-            
-        current_holdings = list(Holding.objects.filter(layer=layer).values('name', 'market_value'))
-        
-        all_holdings = Holding.objects.select_related('layer').all()
-        portfolio_summary = []
-        for h in all_holdings:
-            portfolio_summary.append({
-                "name": h.name,
-                "layer": h.layer.name if h.layer else "未知",
-                "value": float(h.market_value)
-            })
-        
-        from .services.advisor import search_and_recommend_assets
-        result = search_and_recommend_assets(layer_name, buy_amount, current_holdings, portfolio_summary)
-        
-        return JsonResponse(result)
-    except Exception as e:
-        logger.exception("api_advisor_recommend_assets failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    data = json.loads(request.body)
+    layer_name = data.get('layer_name')
+    buy_amount = float(data.get('buy_amount', 0))
+
+    if not layer_name or buy_amount <= 0:
+        raise invalid_input('无效的层级名称或买入金额')
+
+    layer = AssetLayer.objects.filter(name=layer_name).first()
+    if not layer:
+        raise invalid_input('层级不存在')
+
+    current_holdings = list(Holding.objects.filter(layer=layer).values('name', 'market_value'))
+
+    all_holdings = Holding.objects.select_related('layer').all()
+    portfolio_summary = []
+    for h in all_holdings:
+        portfolio_summary.append({
+            "name": h.name,
+            "layer": h.layer.name if h.layer else "未知",
+            "value": float(h.market_value)
+        })
+
+    from .services.advisor import search_and_recommend_assets
+    result = search_and_recommend_assets(layer_name, buy_amount, current_holdings, portfolio_summary)
+
+    return JsonResponse(result)
 
 
 @require_POST
+@api_endpoint
 def api_asset_evaluate(request):
     """调用 AI 对单个资产进行深度评估"""
-    try:
-        body = json.loads(request.body)
-        asset_name = body.get('asset_name', '')
-        if not asset_name:
-            return JsonResponse({'success': False, 'error': '缺少资产名称'}, status=400)
+    body = json.loads(request.body)
+    asset_name = body.get('asset_name', '')
+    if not asset_name:
+        raise invalid_input('缺少资产名称')
 
-        # 查找持仓
-        holding = Holding.objects.select_related('layer').filter(name=asset_name).first()
+    # 查找持仓
+    holding = Holding.objects.select_related('layer').filter(name=asset_name).first()
 
-        # 构建完整组合数据（与组合评估一致）
-        layers_data, total_value = _get_layers_summary()
-        all_holdings = Holding.objects.select_related('layer').all()
-        all_holdings_data = []
-        for h in all_holdings:
-            atd = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
-            all_holdings_data.append({
-                'name': h.name,
-                'code': h.code,
-                'asset_type': h.asset_type,
-                'asset_type_display': atd,
-                'layer_name': h.layer.name,
-                'platform': h.platform,
-                'market_value': float(h.market_value or 0),
-                'profit_loss': float(h.profit_loss or 0),
-                'profit_loss_pct': float(h.profit_loss_pct or 0),
-                'quantity': float(h.quantity or 0),
-                'cost_price': float(h.cost_price) if h.cost_price else None,
-                'current_price': float(h.current_price) if h.current_price else None,
-            })
+    # 构建完整组合数据（与组合评估一致）
+    layers_data, total_value = _get_layers_summary()
+    all_holdings = Holding.objects.select_related('layer').all()
+    all_holdings_data = []
+    for h in all_holdings:
+        atd = dict(ASSET_TYPE_CHOICES).get(h.asset_type, h.asset_type)
+        all_holdings_data.append({
+            'name': h.name,
+            'code': h.code,
+            'asset_type': h.asset_type,
+            'asset_type_display': atd,
+            'layer_name': h.layer.name,
+            'platform': h.platform,
+            'market_value': float(h.market_value or 0),
+            'profit_loss': float(h.profit_loss or 0),
+            'profit_loss_pct': float(h.profit_loss_pct or 0),
+            'quantity': float(h.quantity or 0),
+            'cost_price': float(h.cost_price) if h.cost_price else None,
+            'current_price': float(h.current_price) if h.current_price else None,
+        })
 
-        # 构建目标资产信息
-        asset_info = {'name': asset_name, 'is_active': holding is not None}
-        if holding:
-            asset_type_display = dict(ASSET_TYPE_CHOICES).get(holding.asset_type, holding.asset_type)
-            pct_of_total = float(holding.market_value or 0) / float(total_value) * 100 if total_value > 0 else 0
-            asset_info.update({
-                'code': holding.code,
-                'asset_type': holding.asset_type,
-                'asset_type_display': asset_type_display,
-                'layer_name': holding.layer.name,
-                'platform': holding.platform,
-                'market_value': float(holding.market_value or 0),
-                'quantity': float(holding.quantity or 0),
-                'cost_price': float(holding.cost_price) if holding.cost_price else None,
-                'current_price': float(holding.current_price) if holding.current_price else None,
-                'profit_loss': float(holding.profit_loss or 0),
-                'profit_loss_pct': float(holding.profit_loss_pct or 0),
-                'pct_of_total': pct_of_total,
-            })
-        else:
-            tx_sample = Transaction.objects.filter(asset_name=asset_name).first()
-            asset_info.update({
-                'code': '',
-                'asset_type_display': '未知',
-                'layer_name': '未知',
-                'platform': tx_sample.platform if tx_sample else '',
-            })
+    # 构建目标资产信息
+    asset_info = {'name': asset_name, 'is_active': holding is not None}
+    if holding:
+        asset_type_display = dict(ASSET_TYPE_CHOICES).get(holding.asset_type, holding.asset_type)
+        pct_of_total = float(holding.market_value or 0) / float(total_value) * 100 if total_value > 0 else 0
+        asset_info.update({
+            'code': holding.code,
+            'asset_type': holding.asset_type,
+            'asset_type_display': asset_type_display,
+            'layer_name': holding.layer.name,
+            'platform': holding.platform,
+            'market_value': float(holding.market_value or 0),
+            'quantity': float(holding.quantity or 0),
+            'cost_price': float(holding.cost_price) if holding.cost_price else None,
+            'current_price': float(holding.current_price) if holding.current_price else None,
+            'profit_loss': float(holding.profit_loss or 0),
+            'profit_loss_pct': float(holding.profit_loss_pct or 0),
+            'pct_of_total': pct_of_total,
+        })
+    else:
+        tx_sample = Transaction.objects.filter(asset_name=asset_name).first()
+        asset_info.update({
+            'code': '',
+            'asset_type_display': '未知',
+            'layer_name': '未知',
+            'platform': tx_sample.platform if tx_sample else '',
+        })
 
-        # 交易记录
-        action_labels = dict(Transaction.ACTION_CHOICES)
-        transactions = list(
-            Transaction.objects.filter(asset_name=asset_name)
-            .order_by('-date', '-created_at')
-            .values('action', 'quantity', 'price', 'amount', 'date', 'realized_pnl')
+    # 交易记录
+    action_labels = dict(Transaction.ACTION_CHOICES)
+    transactions = list(
+        Transaction.objects.filter(asset_name=asset_name)
+        .order_by('-date', '-created_at')
+        .values('action', 'quantity', 'price', 'amount', 'date', 'realized_pnl')
+    )
+    for tx in transactions:
+        tx['action_display'] = action_labels.get(tx['action'], tx['action'])
+        tx['date'] = tx['date'].strftime('%Y-%m-%d') if hasattr(tx['date'], 'strftime') else str(tx['date'])
+        tx['quantity'] = float(tx['quantity']) if tx['quantity'] else None
+        tx['price'] = float(tx['price']) if tx['price'] else None
+        tx['amount'] = float(tx['amount'] or 0)
+        tx['realized_pnl'] = float(tx['realized_pnl']) if tx['realized_pnl'] else None
+
+    # 历史市值
+    snapshots = Snapshot.objects.order_by('date').values('date', 'holdings_data')
+    value_history = []
+    for snap in snapshots:
+        for h in (snap['holdings_data'] or []):
+            if h.get('name') == asset_name:
+                value_history.append({
+                    'date': snap['date'].strftime('%Y-%m-%d'),
+                    'market_value': float(h.get('market_value', 0)),
+                    'profit_loss': float(h.get('profit_loss', 0)),
+                })
+                break
+
+    result = evaluate_asset(
+        asset_info, transactions, value_history,
+        layers_data=layers_data, holdings_data=all_holdings_data, total_value=total_value,
+    )
+
+    # 保存评估记录
+    if result.get('success') and result.get('data'):
+        data = result['data']
+        ev = AssetEvaluation.objects.create(
+            asset_name=asset_name,
+            score=data.get('score', 0),
+            signal=data.get('signal', ''),
+            signal_reason=data.get('signal_reason', ''),
+            risk_level=data.get('risk_level', ''),
+            analysis_data=data.get('analysis', {}),
+            action_plan=data.get('action_plan', ''),
+            risks=data.get('risks', []),
+            highlights=data.get('highlights', []),
         )
-        for tx in transactions:
-            tx['action_display'] = action_labels.get(tx['action'], tx['action'])
-            tx['date'] = tx['date'].strftime('%Y-%m-%d') if hasattr(tx['date'], 'strftime') else str(tx['date'])
-            tx['quantity'] = float(tx['quantity']) if tx['quantity'] else None
-            tx['price'] = float(tx['price']) if tx['price'] else None
-            tx['amount'] = float(tx['amount'] or 0)
-            tx['realized_pnl'] = float(tx['realized_pnl']) if tx['realized_pnl'] else None
+        result['data']['date'] = ev.date.isoformat()
 
-        # 历史市值
-        snapshots = Snapshot.objects.order_by('date').values('date', 'holdings_data')
-        value_history = []
-        for snap in snapshots:
-            for h in (snap['holdings_data'] or []):
-                if h.get('name') == asset_name:
-                    value_history.append({
-                        'date': snap['date'].strftime('%Y-%m-%d'),
-                        'market_value': float(h.get('market_value', 0)),
-                        'profit_loss': float(h.get('profit_loss', 0)),
-                    })
-                    break
-
-        result = evaluate_asset(
-            asset_info, transactions, value_history,
-            layers_data=layers_data, holdings_data=all_holdings_data, total_value=total_value,
-        )
-
-        # 保存评估记录
-        if result.get('success') and result.get('data'):
-            data = result['data']
-            ev = AssetEvaluation.objects.create(
-                asset_name=asset_name,
-                score=data.get('score', 0),
-                signal=data.get('signal', ''),
-                signal_reason=data.get('signal_reason', ''),
-                risk_level=data.get('risk_level', ''),
-                analysis_data=data.get('analysis', {}),
-                action_plan=data.get('action_plan', ''),
-                risks=data.get('risks', []),
-                highlights=data.get('highlights', []),
-            )
-            result['data']['date'] = ev.date.isoformat()
-
-        return JsonResponse(result)
-    except Exception as e:
-        logger.exception("api_asset_evaluate failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    return JsonResponse(result)
 
 
 @require_POST
+@api_endpoint
 def api_history_summary(request):
     """请求大模型对历史快照进行总结"""
     try:
@@ -1766,11 +1710,12 @@ def api_test_llm(request):
             return JsonResponse({'success': False, 'error': f'未知协议: {provider}'})
 
     except httpx.ConnectError:
-        return JsonResponse({'success': False, 'error': '无法连接，请检查服务是否已启动'})
+        return JsonResponse({'success': False, 'error': '无法连接，请检查服务是否已启动'}, status=400)
     except httpx.HTTPStatusError as e:
-        return JsonResponse({'success': False, 'error': f'HTTP {e.response.status_code}: {e.response.text[:200]}'})
+        return JsonResponse({'success': False, 'error': f'HTTP {e.response.status_code}: {e.response.text[:200]}'}, status=400)
     except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)})
+        logger.exception("api_test_llm failed")
+        return JsonResponse({'success': False, 'error': '连接测试失败，请检查日志'}, status=500)
 
 
 # ==================== 资产详情 ====================
@@ -2002,6 +1947,7 @@ def _render_asset_detail(request, holding, asset_name):
 def cashflow_page(request):
     """资金流向分析页面 — 从快照和交易记录自动推算"""
     from .services.cashflow import analyze_portfolio_flows
+    from .services.integrity import run_integrity_checks
     analysis = analyze_portfolio_flows()
     context = {
         'summary': analysis['summary'],
@@ -2010,82 +1956,76 @@ def cashflow_page(request):
         'recent_transactions': analysis['recent_transactions'],
         'monthly_json': json.dumps(analysis['monthly_chart'], cls=DecimalEncoder, ensure_ascii=False),
         'action_json': json.dumps(analysis['action_chart'], cls=DecimalEncoder, ensure_ascii=False),
+        'integrity': run_integrity_checks(),
     }
     return render(request, 'assets/cashflow.html', context)
 
 
 @require_POST
+@api_endpoint
 def api_cashflow_confirm(request):
     """确认推算的资金流向 — 创建 transfer/withdraw 交易记录"""
-    try:
-        data = json.loads(request.body)
-        action = data.get('action')  # 'transfer' or 'withdraw'
-        amount = Decimal(str(data.get('amount', 0)))
-        tx_date = data.get('date') or timezone.localdate().isoformat()
-        notes = data.get('notes', '')
+    data = json.loads(request.body)
+    action = data.get('action')  # 'transfer' or 'withdraw'
+    amount = Decimal(str(data.get('amount', 0)))
+    tx_date = data.get('date') or timezone.localdate().isoformat()
+    notes = data.get('notes', '')
 
-        if action not in ('transfer', 'withdraw'):
-            return JsonResponse({'success': False, 'error': '类型必须为转入或转出'}, status=400)
-        if amount <= 0:
-            return JsonResponse({'success': False, 'error': '金额必须大于0'}, status=400)
+    if action not in ('transfer', 'withdraw'):
+        raise invalid_input('类型必须为转入或转出')
+    if amount <= 0:
+        raise invalid_input('金额必须大于0')
 
-        tx = Transaction.objects.create(
-            action=action,
-            asset_name='资金转入' if action == 'transfer' else '资金转出',
-            amount=amount,
-            date=date.fromisoformat(tx_date),
-            source='manual',
-            notes=notes or '用户确认推算',
-        )
-        return JsonResponse({'success': True, 'id': tx.id})
-    except (ValueError, KeyError) as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
-    except Exception as e:
-        logger.exception("api_cashflow_confirm failed")
-        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    tx = Transaction.objects.create(
+        action=action,
+        asset_name='资金转入' if action == 'transfer' else '资金转出',
+        amount=amount,
+        date=date.fromisoformat(tx_date),
+        source='manual',
+        notes=notes or '用户确认推算',
+    )
+    return JsonResponse({'success': True, 'id': tx.id})
 
 
 @require_POST
+@api_endpoint
 def api_alert_dismiss(request):
     """忽略预警（7天内不再显示）"""
     from .models import AlertAction
-    try:
-        data = json.loads(request.body)
-        alert_type = data.get('alert_type', '')
-        holding_id = data.get('holding_id')
-        layer_name = data.get('layer_name')  # for deviation alerts
+    data = json.loads(request.body)
+    alert_type = data.get('alert_type', '')
+    holding_id = data.get('holding_id')
+    layer_name = data.get('layer_name')  # for deviation alerts
 
-        if layer_name:
-            # 层级偏差预警 → 存入 Setting
-            raw = Setting.get('dismissed_deviation_alerts', '{}')
-            try:
-                dismissed = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                dismissed = {}
-            dismissed[layer_name] = timezone.now().isoformat()
-            Setting.set('dismissed_deviation_alerts', json.dumps(dismissed, ensure_ascii=False))
-            return JsonResponse({'success': True})
+    if layer_name:
+        # 层级偏差预警 → 存入 Setting
+        raw = Setting.get('dismissed_deviation_alerts', '{}')
+        try:
+            dismissed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            dismissed = {}
+        dismissed[layer_name] = timezone.now().isoformat()
+        Setting.set('dismissed_deviation_alerts', json.dumps(dismissed, ensure_ascii=False))
+        return JsonResponse({'success': True})
 
-        cashflow_key = data.get('cashflow_key')
-        if cashflow_key:
-            raw = Setting.get('dismissed_cashflow_alerts', '{}')
-            try:
-                dismissed = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                dismissed = {}
-            dismissed[cashflow_key] = timezone.now().isoformat()
-            Setting.set('dismissed_cashflow_alerts', json.dumps(dismissed, ensure_ascii=False))
-            return JsonResponse({'success': True})
+    cashflow_key = data.get('cashflow_key')
+    if cashflow_key:
+        raw = Setting.get('dismissed_cashflow_alerts', '{}')
+        try:
+            dismissed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            dismissed = {}
+        dismissed[cashflow_key] = timezone.now().isoformat()
+        Setting.set('dismissed_cashflow_alerts', json.dumps(dismissed, ensure_ascii=False))
+        return JsonResponse({'success': True})
 
-        if holding_id and alert_type:
-            # 持仓级风险预警 → AlertAction 记录
-            AlertAction.objects.create(
-                holding_id=holding_id,
-                alert_type=alert_type,
-                action='dismissed',
-            )
-            return JsonResponse({'success': True})
+    if holding_id and alert_type:
+        # 持仓级风险预警 → AlertAction 记录
+        AlertAction.objects.create(
+            holding_id=holding_id,
+            alert_type=alert_type,
+            action='dismissed',
+        )
+        return JsonResponse({'success': True})
 
-        return JsonResponse({'success': False, 'error': '缺少参数'}, status=400)
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e)}, status=400)
+    raise invalid_input('缺少参数')

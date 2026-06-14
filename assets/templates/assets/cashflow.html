@@ -7,6 +7,49 @@
     <h2>资金流向</h2>
 </div>
 
+<!-- 数据完整性自检 -->
+{% if integrity %}
+<div class="card animate-in" style="margin-bottom: 12px; padding: 10px 14px;
+    border-left: 4px solid {% if integrity.overall == 'pass' %}#10b981{% elif integrity.overall == 'warning' %}#f59e0b{% else %}#ef4444{% endif %};">
+    <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;"
+         onclick="document.getElementById('integrityDetail').style.display = document.getElementById('integrityDetail').style.display === 'none' ? 'block' : 'none';">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:1.1rem;">
+                {% if integrity.overall == 'pass' %}✅{% elif integrity.overall == 'warning' %}⚠️{% else %}🔴{% endif %}
+            </span>
+            <div>
+                <strong style="font-size:0.9rem;">
+                    数据完整性自检：
+                    {% if integrity.overall == 'pass' %}全部通过
+                    {% elif integrity.overall == 'warning' %}有提醒
+                    {% else %}发现不一致
+                    {% endif %}
+                </strong>
+                <span class="text-xs text-muted" style="margin-left:8px;">
+                    （{{ integrity.checks|length }} 项 · 点击展开）
+                </span>
+            </div>
+        </div>
+        <span class="text-xs text-muted">▼</span>
+    </div>
+    <div id="integrityDetail" style="display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--color-border);">
+        {% for c in integrity.checks %}
+        <div style="display:flex; gap:10px; padding:6px 0; font-size:0.83rem;">
+            <span style="flex-shrink:0;">
+                {% if c.status == 'pass' %}<span style="color:#10b981;">●</span>
+                {% elif c.status == 'warning' %}<span style="color:#f59e0b;">●</span>
+                {% else %}<span style="color:#ef4444;">●</span>{% endif %}
+            </span>
+            <div style="flex:1;">
+                <strong>{{ c.name }}</strong>
+                <span class="text-muted" style="margin-left:6px;">{{ c.message }}</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <!-- Summary Stats -->
 <div class="stats-grid animate-in" style="margin-bottom: 12px;">
     <div class="stat-card card-compact">

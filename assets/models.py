@@ -1,8 +1,11 @@
 import json
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 class AssetLayer(models.Model):
@@ -109,6 +112,7 @@ class Holding(models.Model):
                 self.profit_loss_pct = Decimal('0')
         elif not self.cost_price and self.market_value and self.profit_loss:
             # 无成本价但有市值和非零盈亏，反推成本并计算收益率
+            # 注意：此为估算路径，非真实成本。专业理财场景下应优先以截图/手工录入的真实成本为准。
             cost_total = self.market_value - self.profit_loss
             if cost_total > 0:
                 raw_pct = (self.profit_loss / cost_total * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
@@ -118,6 +122,11 @@ class Holding(models.Model):
                     self.cost_price = (cost_total / self.quantity).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
                     if self.market_value and self.quantity:
                         self.current_price = (self.market_value / self.quantity).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+                    logger.warning(
+                        "Holding '%s' cost_price reverse-derived from market_value/profit_loss "
+                        "(cost=%.4f, pct=%.4f). 仅作估算，建议补录真实成本。",
+                        self.name, self.cost_price, self.profit_loss_pct,
+                    )
         super().save(*args, **kwargs)
 
 
@@ -171,6 +180,7 @@ class Transaction(models.Model):
     platform = models.CharField('平台', max_length=100, blank=True)
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True, null=True, blank=True)
 
     class Meta:
         ordering = ['-date', '-created_at']
