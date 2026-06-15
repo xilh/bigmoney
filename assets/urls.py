@@ -22,6 +22,7 @@ urlpatterns = [
     path('history/', _protected(views.history_page), name='history'),
     path('cashflow/', _protected(views.cashflow_page), name='cashflow'),
     path('checklist/', _protected(views.checklist_page), name='checklist'),
+    path('decisions/', _protected(views.decision_log_page), name='decisions'),
     path('settings/', _protected(views.settings_page), name='settings'),
     path('assets/', _protected(views.asset_list_page), name='asset_list'),
     path('assets/<int:holding_id>/', _protected(views.asset_detail_page), name='asset_detail'),

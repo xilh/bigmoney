@@ -1,0 +1,117 @@
+{% extends 'assets/base.html' %}
+
+{% block title %}决策日志{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>决策日志</h2>
+    <p>落地《资产配置方案》的卖出纪律：每笔卖出写下理由、每只持仓记录买入逻辑，年度回顾</p>
+</div>
+
+<!-- 概览 -->
+<div class="stats-grid" style="margin-bottom: 20px;">
+    <div class="stat-card">
+        <div class="stat-label">卖出决策数</div>
+        <div class="stat-value">{{ sell_count }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">累计已实现盈亏</div>
+        <div class="stat-value {% if total_realized >= 0 %}text-success{% else %}text-danger{% endif %}">
+            {% if total_realized >= 0 %}+{% endif %}¥{{ total_realized|floatformat:0 }}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">缺卖出理由</div>
+        <div class="stat-value {% if missing_reason %}text-warning{% endif %}">{{ missing_reason }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">缺买入逻辑</div>
+        <div class="stat-value {% if without_thesis %}text-warning{% endif %}">{{ without_thesis|length }} / {{ holdings_count }}</div>
+    </div>
+</div>
+
+<!-- 卖出决策记录 -->
+<div class="card mb-3 animate-in">
+    <div class="card-header">
+        <h3>📉 卖出决策记录</h3>
+        <span class="text-xs text-muted">卖出时在弹窗中填写理由即可记入此处</span>
+    </div>
+    <div class="card-body" style="padding:0;">
+        {% if sells %}
+        <table class="table" style="margin:0;">
+            <thead><tr>
+                <th>日期</th>
+                <th>资产</th>
+                <th>类型</th>
+                <th class="text-right">金额</th>
+                <th class="text-right">已实现盈亏</th>
+                <th>理由</th>
+            </tr></thead>
+            <tbody>
+            {% for s in sells %}
+            <tr>
+                <td class="text-muted text-sm">{{ s.date|date:"Y-m-d" }}</td>
+                <td><strong>{{ s.asset_name }}</strong>{% if s.platform %}<span class="text-xs text-muted"> · {{ s.platform }}</span>{% endif %}</td>
+                <td><span class="badge badge-neutral">{{ s.kind }}</span></td>
+                <td class="text-right font-mono">¥{{ s.amount|floatformat:0 }}</td>
+                <td class="text-right font-mono {% if s.realized_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if s.realized_pnl is not None %}{% if s.realized_pnl >= 0 %}+{% endif %}¥{{ s.realized_pnl|floatformat:0 }}{% else %}—{% endif %}
+                </td>
+                <td class="text-sm">
+                    {% if s.reason %}{{ s.reason }}{% else %}<span class="text-muted" style="font-style:italic;">未填写</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state" style="padding:32px;">
+            <div class="empty-state-text">暂无卖出记录</div>
+            <div class="empty-state-hint">在持仓页卖出资产并填写理由后，会自动汇总到这里</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 持仓买入逻辑 -->
+<div class="card mb-3 animate-in stagger-1">
+    <div class="card-header flex-between">
+        <h3>🎯 持仓买入逻辑</h3>
+        <span class="text-xs text-muted">卖出信号1「投资逻辑破坏」的校验基准</span>
+    </div>
+    <div class="card-body" style="padding:0;">
+        {% if without_thesis %}
+        <div style="padding:12px 16px; background:rgba(251,191,36,0.08); border-bottom:1px solid var(--color-border);">
+            <strong class="text-warning">⚠️ {{ without_thesis|length }} 只持仓未记录买入逻辑</strong>
+            <span class="text-xs text-muted"> —— 方案要求「每一笔个股投资都应有明确的为什么买的原因」，请在持仓编辑中补充。</span>
+        </div>
+        {% endif %}
+        <table class="table" style="margin:0;">
+            <thead><tr>
+                <th>层级</th>
+                <th>资产</th>
+                <th class="text-right">市值</th>
+                <th>买入逻辑</th>
+            </tr></thead>
+            <tbody>
+            {% for h in without_thesis %}
+            <tr>
+                <td class="text-xs text-muted">{{ h.layer.name }}</td>
+                <td><strong>{{ h.name }}</strong>{% if h.code %}<span class="text-xs text-muted"> {{ h.code }}</span>{% endif %}</td>
+                <td class="text-right font-mono text-muted">¥{{ h.market_value|floatformat:0 }}</td>
+                <td><a href="{% url 'assets:holdings' %}#holding-row-{{ h.id }}" class="text-warning text-sm">去补充 →</a></td>
+            </tr>
+            {% endfor %}
+            {% for h in with_thesis %}
+            <tr>
+                <td class="text-xs text-muted">{{ h.layer.name }}</td>
+                <td><strong>{{ h.name }}</strong>{% if h.code %}<span class="text-xs text-muted"> {{ h.code }}</span>{% endif %}</td>
+                <td class="text-right font-mono text-muted">¥{{ h.market_value|floatformat:0 }}</td>
+                <td class="text-sm">{{ h.buy_thesis }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

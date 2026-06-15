@@ -32,6 +32,20 @@ class AssetLayer(models.Model):
         return result['total'] or Decimal('0')
 
 
+# 层内子类别（v3.4 §2.2/§2.4）。留空=按 asset_type 自动归类；显式设置可消除
+# asset_type 的歧义（如 dividend_stock 既可能是「红利ETF」也可能是「红利个股」）。
+SUB_CATEGORY_CHOICES = [
+    ('', '自动(按类型)'),
+    ('broad', '宽基指数'),       # T3
+    ('dividend', '红利/价值锚'),  # T3
+    ('pick', '精选个股'),        # T3（计入单行业≤50%红线）
+    ('gold', '黄金'),            # T4
+    ('hk', '港股通'),            # T5
+    ('qdii', 'QDII'),           # T5
+    ('theme', '主题'),           # T5
+]
+
+
 ASSET_TYPE_CHOICES = [
     ('cash', '现金'),
     ('money_fund', '货币基金'),
@@ -62,6 +76,11 @@ class Holding(models.Model):
         '资产类型', max_length=30,
         choices=ASSET_TYPE_CHOICES, default='other'
     )
+    sub_category = models.CharField(
+        '层内子类别', max_length=20, blank=True, default='',
+        choices=SUB_CATEGORY_CHOICES,
+        help_text='留空则按资产类型自动归类；显式设置用于消歧（如区分红利ETF与红利个股）'
+    )
     quantity = models.DecimalField('数量/份额', max_digits=18, decimal_places=4, default=0)
     cost_price = models.DecimalField('成本价/买入均价', max_digits=14, decimal_places=4, null=True, blank=True)
     current_price = models.DecimalField('当前价/净值', max_digits=14, decimal_places=4, null=True, blank=True)
@@ -76,6 +95,10 @@ class Holding(models.Model):
         help_text='如：招商银行、支付宝、天天基金、雪球等')
     is_reserve = models.BooleanField('干火药储备', default=False,
         help_text='标记为应急储备/干火药，不参与常规再平衡部署')
+    industry = models.CharField('行业/板块', max_length=50, blank=True, db_index=True,
+        help_text='如：白酒、银行、科技、医药、电力等。用于行业集中度分析与「个人财富—企业风险脱钩」检视')
+    buy_thesis = models.TextField('买入逻辑', blank=True,
+        help_text='为什么买这只资产（护城河/现金流/估值等）。卖出时用于校验「投资逻辑是否破坏」')
     notes = models.TextField('备注', blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)

@@ -113,6 +113,156 @@
     </div>
 </div>
 
+<!-- Sub-allocation: T3 宽基/红利/精选个股、T4 黄金、T5 港股通/QDII/主题 -->
+{% if sub_allocation %}
+<div class="card mb-3 animate-in stagger-3">
+    <div class="card-header flex-between">
+        <h3 style="margin:0;">🧩 层内子配置</h3>
+        <span class="text-xs text-muted">v3.4：T3 宽基50-60/红利25-35/个股10-20 · T4 黄金8-12 · T5 港股30-40/QDII50-60/主题≤10</span>
+    </div>
+    <div class="card-body">
+        {% for sub in sub_allocation %}
+        <div style="margin-bottom: 18px;">
+            <div class="flex-between" style="margin-bottom: 8px;">
+                <strong>{{ sub.layer_name }}</strong>
+                <span class="text-xs text-muted">
+                    {% if sub.basis == 'layer' %}占本层比例（本层市值 ¥{{ sub.layer_value|floatformat:0 }}）{% else %}占总资产比例{% endif %}
+                </span>
+            </div>
+            <table class="table" style="margin:0;">
+                <thead><tr>
+                    <th>子类</th>
+                    <th class="text-right">目标区间</th>
+                    <th class="text-right">实际</th>
+                    <th class="text-right">市值</th>
+                    <th>状态</th>
+                </tr></thead>
+                <tbody>
+                {% for it in sub.items %}
+                <tr>
+                    <td><strong>{{ it.name }}</strong></td>
+                    <td class="text-right text-muted">{% if it.min is not None %}{{ it.min|floatformat:0 }}-{{ it.max|floatformat:0 }}%{% else %}—{% endif %}</td>
+                    <td class="text-right font-mono">{{ it.actual_ratio|floatformat:1 }}%</td>
+                    <td class="text-right font-mono text-muted">¥{{ it.actual_value|floatformat:0 }}</td>
+                    <td>
+                        {% if it.status == 'balanced' %}<span class="badge badge-success">达标</span>
+                        {% elif it.status == 'low' %}<span class="badge badge-warning">偏低</span>
+                        {% elif it.status == 'high' %}<span class="badge badge-warning">偏高</span>
+                        {% else %}<span class="badge badge-neutral">—</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% for a in sub.alerts %}
+            <div class="text-xs" style="margin-top:6px; color: var(--color-warning);">⚠️ {{ a.message }} —— {{ a.action }}</div>
+            {% endfor %}
+            {% if sub.layer_order == 5 %}
+            <div class="text-xs text-muted" style="margin-top:10px; padding:8px 10px; background:rgba(125,125,125,0.06); border-radius:6px;">
+                <strong>{{ qdii_internal.name }}：</strong>{{ qdii_internal.note }}
+                <div style="margin-top:4px;">
+                    {% for q in qdii_internal.targets %}<span style="display:inline-block; margin-right:12px;">{{ q.name }} <span class="font-mono">{{ q.range }}</span></span>{% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Industry concentration: 申万一级 ≤ 精选个股层 50% + 职业脱钩 -->
+{% if industry_exposure.picks_industries or industry_exposure.exposures or industry_exposure.unclassified_picks %}
+<div class="card mb-3 animate-in stagger-3">
+    <div class="card-header flex-between">
+        <h3 style="margin:0;">🏭 行业集中度</h3>
+        <span class="text-xs text-muted">v3.4：单一申万一级 ≤ 精选个股层 50% · 职业风险脱钩</span>
+    </div>
+    <div class="card-body">
+        {% for a in industry_exposure.alerts %}
+        <div class="alert {% if a.level == 'critical' %}alert-danger{% else %}alert-warning{% endif %}" style="margin-bottom:8px; padding:10px 12px; border-radius:8px;">
+            <strong>{{ a.message }}</strong><div class="text-xs" style="margin-top:4px;">{{ a.action }}</div>
+        </div>
+        {% endfor %}
+        {% if industry_exposure.picks_industries %}
+        <div class="text-sm" style="margin-bottom:6px;">精选个股层内行业分布（个股层市值 ¥{{ industry_exposure.picks_value|floatformat:0 }}）</div>
+        <table class="table" style="margin:0 0 12px;">
+            <thead><tr><th>申万一级</th><th class="text-right">市值</th><th class="text-right">占个股层</th></tr></thead>
+            <tbody>
+            {% for e in industry_exposure.picks_industries %}
+            <tr>
+                <td><strong>{{ e.industry }}</strong></td>
+                <td class="text-right font-mono text-muted">¥{{ e.value|floatformat:0 }}</td>
+                <td class="text-right font-mono {% if e.pct_of_picks > 50 %}text-danger{% elif e.pct_of_picks >= 40 %}text-warning{% endif %}">{{ e.pct_of_picks|floatformat:1 }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+        {% if industry_exposure.unclassified_picks %}
+        <div class="text-xs text-muted" style="margin-bottom:8px;">精选个股中尚有 ¥{{ industry_exposure.unclassified_picks|floatformat:0 }} 未标注申万一级行业，补充后才能准确判断 50% 红线。</div>
+        {% endif %}
+        {% if industry_exposure.exposures %}
+        <details>
+            <summary class="text-xs text-muted" style="cursor:pointer;">全组合行业分布（职业脱钩参考）</summary>
+            <table class="table" style="margin:8px 0 0;">
+                <thead><tr><th>行业</th><th class="text-right">市值</th><th class="text-right">占总资产</th><th class="text-right">占权益类</th></tr></thead>
+                <tbody>
+                {% for e in industry_exposure.exposures %}
+                <tr>
+                    <td>{{ e.industry }}</td>
+                    <td class="text-right font-mono text-muted">¥{{ e.value|floatformat:0 }}</td>
+                    <td class="text-right font-mono">{{ e.pct_of_total|floatformat:1 }}%</td>
+                    <td class="text-right font-mono text-muted">{{ e.pct_of_equity|floatformat:1 }}%</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- 分级 DCA 规则 + 黄金双指标 + 个股买入门槛 (v3.4 参考) -->
+<div class="card mb-3 animate-in stagger-3">
+    <div class="card-header"><h3 style="margin:0;">🛠️ 执行规则参考 (v3.4)</h3></div>
+    <div class="card-body">
+        <div class="text-sm" style="font-weight:600; margin-bottom:6px;">分级 DCA 规则（§5.2）</div>
+        <table class="table" style="margin:0 0 16px;">
+            <thead><tr><th>资产</th><th>模式</th><th>频率</th><th>切换条件</th></tr></thead>
+            <tbody>
+            {% for r in dca_rules %}
+            <tr>
+                <td><strong>{{ r.asset }}</strong></td>
+                <td><span class="badge badge-neutral">{{ r.mode }}</span></td>
+                <td class="text-xs text-muted">{{ r.freq }}</td>
+                <td class="text-xs">{{ r.rule }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="text-sm" style="font-weight:600; margin-bottom:6px;">{{ gold_dual.name }}（§2.3）</div>
+        <div class="text-xs text-muted" style="margin-bottom:4px;">{{ gold_dual.indicators|join:" ｜ " }}</div>
+        <div class="text-sm" style="margin-bottom:6px; color:var(--color-warning);">{{ gold_dual.current }}</div>
+        <table class="table" style="margin:0 0 16px;">
+            <thead><tr><th>双指标状态</th><th>动作</th></tr></thead>
+            <tbody>
+            {% for s in gold_dual.states %}
+            <tr><td class="font-mono text-xs">{{ s.state }}</td><td class="text-sm">{{ s.action }}</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="text-sm" style="font-weight:600; margin-bottom:6px;">精选个股买入门槛（§2.2.2，须全部满足）</div>
+        <ol style="margin:0; padding-left:20px;">
+            {% for g in stock_buy_gates %}<li class="text-sm" style="margin-bottom:3px;">{{ g }}</li>{% endfor %}
+        </ol>
+        <div class="text-xs text-muted" style="margin-top:8px;">未满足任一条，不得新增个股；个股研究体系成熟前，新增资金优先 ETF。</div>
+    </div>
+</div>
+
 <!-- Investment Plan -->
 {% if investment_plan %}
 <div class="card mb-3 animate-in stagger-4">
@@ -190,7 +340,7 @@
 <!-- Drawdown Protocol -->
 <div class="accordion-item animate-in" style="border: 1px solid var(--color-border); border-radius: var(--border-radius); background: var(--color-surface); margin-bottom: 40px;">
     <div class="accordion-header" onclick="toggleAccordion(this)" style="padding: 16px;">
-        <h3 style="margin: 0;">🛡️ 下跌应对协议 (市场操作指南)</h3>
+        <h3 style="margin: 0;">🛡️ 极端情景应对手册 (v3.4 §六)</h3>
         <span class="accordion-arrow">▾</span>
     </div>
     <div class="accordion-body">

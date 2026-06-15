@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 from .models import (
     AssetLayer, Holding, Snapshot, Transaction,
-    Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES,
+    Upload, ChecklistRecord, Setting, ASSET_TYPE_CHOICES, SUB_CATEGORY_CHOICES,
     EvaluationReport, AssetEvaluation, SystemBackup
 )
 from .services.ocr import recognize_screenshot
@@ -83,6 +83,16 @@ def _get_layers_summary():
     return layers_data, float(total_value)
 
 
+def _build_market_history(holdings=None):
+    """构建用于风控口径校准的市场历史（近一月/距峰值），供 calculate_risk_alerts 使用。
+    传入当前 holdings，用于旧快照缺 layer_order 时按 id 回退到当前层 order。"""
+    from .services.rebalance import build_market_history
+    snaps = list(Snapshot.objects.order_by('-date')[:120])
+    if holdings is None:
+        holdings = Holding.objects.select_related('layer').all()
+    return build_market_history(snaps, holdings=holdings)
+
+
 # ==================== 页面视图 ====================
 from django.db.models import Sum
 
@@ -122,8 +132,11 @@ def dashboard(request):
         if abs(ld['deviation']) > 5 and ld['name'] not in dismissed_deviations
     ]
 
-    # 风险预警（过滤已处置的）
-    risk_alerts = calculate_risk_alerts(holdings, total_value, acknowledged_keys=acked_keys)
+    # 风险预警（过滤已处置的；按近一月/距峰值口径）
+    risk_alerts = calculate_risk_alerts(
+        holdings, total_value, acknowledged_keys=acked_keys,
+        market_history=_build_market_history(holdings),
+    )
 
     # 平台分布
     platform_distribution = list(Holding.objects.values('platform')
@@ -182,6 +195,7 @@ def holdings_page(request):
         'total_value': total_value,
         'layers_data': layers_data,
         'asset_type_choices': ASSET_TYPE_CHOICES,
+        'sub_category_choices': SUB_CATEGORY_CHOICES,
         'platforms': platforms,
     }
     return render(request, 'assets/holdings.html', context)
@@ -224,12 +238,20 @@ def rebalance_page(request):
     from .services.rebalance import calculate_risk_alerts
     holdings = list(Holding.objects.select_related('layer').all())
     # 往再平衡的分析里追加持股风控预警
-    risk_alerts = calculate_risk_alerts(holdings, total_value)
+    risk_alerts = calculate_risk_alerts(holdings, total_value, market_history=_build_market_history(holdings))
     # prepend risk alerts so they are highly visible
     rebalance_result['alerts'] = risk_alerts + rebalance_result.get('alerts', [])
 
     # 生成具体投资执行计划
     investment_plan = generate_investment_plan(layers_data, holdings, total_value, rebalance_result)
+
+    # 子配置（T3 宽基/红利/精选个股、T4 黄金、T5 港股通/QDII/主题）与行业集中度
+    from .services.allocation import (
+        calculate_sub_allocation, calculate_industry_exposure, QDII_INTERNAL,
+    )
+    from .services.rebalance import DCA_RULES, GOLD_DUAL_INDICATOR, STOCK_BUY_GATES
+    sub_allocation = calculate_sub_allocation(holdings, total_value)
+    industry_exposure = calculate_industry_exposure(holdings, total_value)
 
     context = {
         'total_value': total_value,
@@ -239,6 +261,12 @@ def rebalance_page(request):
         'layers_json': json.dumps(layers_data, cls=DecimalEncoder, ensure_ascii=False),
         'drawdown_protocols': DRAWDOWN_PROTOCOLS,
         'investment_plan': investment_plan,
+        'sub_allocation': sub_allocation,
+        'industry_exposure': industry_exposure,
+        'qdii_internal': QDII_INTERNAL,
+        'dca_rules': DCA_RULES,
+        'gold_dual': GOLD_DUAL_INDICATOR,
+        'stock_buy_gates': STOCK_BUY_GATES,
     }
     return render(request, 'assets/rebalance.html', context)
 
@@ -293,8 +321,8 @@ def checklist_page(request):
                 {'text': '记录各层级实际比例 vs. 目标比例', 'auto_id': 'deviation_check'},
                 {'text': '检查货币基金收益率是否异常偏低', 'auto_id': 'money_fund_check'},
                 {'text': '确认债券基金是否有异常波动（单月跌幅>1%即为异常）', 'auto_id': 'bond_fund_check'},
-                {'text': '审视单只个股仓位是否因涨跌突破5%红线', 'auto_id': 'concentration_check'},
-                {'text': '如存在单笔个股超过5%，在本月内分批减仓至目标比例', 'auto_id': None},
+                {'text': '审视单只个股是否突破 3% 总资产红线（v3.4）', 'auto_id': 'concentration_check'},
+                {'text': '如存在单只个股超过 3%，在本月内分批减仓至 3% 以下', 'auto_id': None},
             ],
         },
         'quarterly': {
@@ -302,10 +330,15 @@ def checklist_page(request):
             'period': '季末最后一周 · 约1-2小时',
             'items': [
                 {'text': '全面审视五层配置比例，判断是否需要小幅再平衡', 'auto_id': 'deviation_check'},
-                {'text': '检查各基金产品同类排名（连续两季后25%应考虑替换）', 'auto_id': None},
-                {'text': '审视行业暴露：检查股票持仓是否在某一行业过度集中', 'auto_id': None},
-                {'text': '审视第五层卫星仓位的每笔投资投资逻辑是否仍然成立', 'auto_id': 'satellite_check'},
+                {'text': '层内子配置是否在区间内（T3 宽基/红利/个股、T5 港股/QDII/主题）', 'auto_id': 'suballoc_check'},
+                {'text': '精选个股层单一申万一级行业是否 ≤ 50%（职业脱钩）', 'auto_id': 'industry_check'},
+                {'text': '红利低波股息率分位是否仍 >60%（决定 DCA 节奏）', 'auto_id': None},
+                {'text': '黄金双指标状态复核（实质金价分位 + Gold/SPX 比价分位）', 'auto_id': None},
+                {'text': 'QDII 内部结构是否符合（美股宽基优先，非全押纳指）', 'auto_id': None},
+                {'text': '精选个股投资逻辑是否仍成立（卖出五大信号核验）', 'auto_id': None},
+                {'text': '基金产品同类排名（连续两季后25%应考虑替换）', 'auto_id': None},
                 {'text': '记录本季度总回报和各层级回报，建立历史记录', 'auto_id': None},
+                {'text': '核查 v3.4 待办：教育金三桶 / 家庭综合规划进展', 'auto_id': None},
             ],
         },
         'yearly': {
@@ -313,14 +346,17 @@ def checklist_page(request):
             'period': '12月或次年1月初 · 约2-3小时',
             'items': [
                 {'text': '各层级实际比例 vs. 目标比例，执行强制再平衡', 'auto_id': 'deviation_check'},
-                {'text': '单只个股是否有超过5%的情况', 'auto_id': 'concentration_check'},
+                {'text': '单只个股是否有超过 3% 的情况', 'auto_id': 'concentration_check'},
+                {'text': '精选个股层单一行业 ≤ 50% 复核', 'auto_id': 'industry_check'},
+                {'text': '新增个股是否均满足 5 项买入门槛（研究报告/估值/行业/仓位/退出）', 'auto_id': None},
                 {'text': '基金产品同类排名审视，替换连续落后的基金', 'auto_id': None},
-                {'text': '保险保障是否充足，受益人是否正确', 'auto_id': None},
-                {'text': '税务优化：股息持有期、个税扣除项是否充分利用', 'auto_id': None},
-                {'text': '第五层卫星仓位每笔投资逻辑重新评估', 'auto_id': 'satellite_check'},
+                {'text': '保险保障是否充足，受益人是否正确（家庭综合规划）', 'auto_id': None},
+                {'text': '税务/CRS 规划：股息持有期、个税扣除、留学路径', 'auto_id': None},
+                {'text': '精选个股投资逻辑重新评估（卖出五大信号）', 'auto_id': None},
                 {'text': '风险偏好是否需要调整（家庭、事业、健康变化）', 'auto_id': None},
-                {'text': '下一年度目标配置比例是否需要微调（年龄因素）', 'auto_id': None},
-                {'text': '遗嘱、家族信托、子女教育基金进展审视', 'auto_id': None},
+                {'text': '下一年度目标配置比例是否需要微调（年龄/生命周期）', 'auto_id': None},
+                {'text': '遗嘱/紧急授权、家族信托、教育金三桶进展审视', 'auto_id': None},
+                {'text': '公司经营风险与个人资产隔离（企业主风险）', 'auto_id': None},
                 {'text': '记录本年度总回报、各层级回报、重大决策日志', 'auto_id': None},
             ],
         },
@@ -330,16 +366,21 @@ def checklist_page(request):
     layers_data, total_value = _get_layers_summary()
     holdings = Holding.objects.select_related('layer').all()
     from .services.rebalance import calculate_risk_alerts
-    risk_alerts = calculate_risk_alerts(holdings, total_value)
-    
-    # 集中度检查
+    risk_alerts = calculate_risk_alerts(holdings, total_value, market_history=_build_market_history(holdings))
+
+    # 集中度检查（3% 红线）
     concentration_alerts = [a for a in risk_alerts if '单票集中度过高' in a['message']]
-    # 卫星仓位检查
-    satellite_alerts = [a for a in risk_alerts if '单票集中度过高' not in a['message']]
-    # 偏差检查
+    # 偏差检查（层级偏离 >5pp）
     deviation_alerts = [ld for ld in layers_data if abs(ld['deviation']) > 5]
     # 债基检查
     bond_alerts = [h for h in holdings if h.asset_type == 'bond_fund' and (h.profit_loss_pct or 0) < -1.0]
+    # 行业集中度检查（精选个股层单一申万一级 ≤ 50%）
+    from .services.allocation import calculate_industry_exposure, calculate_sub_allocation
+    industry_exposure = calculate_industry_exposure(holdings, total_value)
+    industry_alerts = industry_exposure['alerts']
+    # 子配置区间检查
+    sub_allocation = calculate_sub_allocation(holdings, total_value)
+    suballoc_alerts = [a for sub in sub_allocation for a in sub['alerts']]
 
     automated_results = {
         'deviation_check': {
@@ -348,11 +389,11 @@ def checklist_page(request):
         },
         'concentration_check': {
             'pass': len(concentration_alerts) == 0,
-            'message': '无单票违反5%集中度红线' if len(concentration_alerts) == 0 else f'发现 {len(concentration_alerts)} 只票突破5%红线'
+            'message': '无单只个股违反 3% 红线' if len(concentration_alerts) == 0 else f'发现 {len(concentration_alerts)} 只个股突破 3% 红线'
         },
-        'satellite_check': {
-            'pass': len(satellite_alerts) == 0,
-            'message': '卫星仓位暂无止盈止损触发' if len(satellite_alerts) == 0 else f'发现 {len(satellite_alerts)} 个卫星仓位触发预警'
+        'suballoc_check': {
+            'pass': len(suballoc_alerts) == 0,
+            'message': '层内子配置均在目标区间内' if len(suballoc_alerts) == 0 else '；'.join(a['message'] for a in suballoc_alerts)
         },
         'bond_fund_check': {
             'pass': len(bond_alerts) == 0,
@@ -361,7 +402,14 @@ def checklist_page(request):
         'money_fund_check': {
             'pass': True,
             'message': '需登录相关平台确认最新七日年化'
-        }
+        },
+        'industry_check': {
+            'pass': len(industry_alerts) == 0,
+            'message': (
+                '精选个股层无单一行业超 50%' if industry_exposure['picks_industries']
+                else '精选个股层尚未标注申万一级行业，无法自动检测（请在持仓补充行业）'
+            ) if len(industry_alerts) == 0 else '；'.join(a['message'] for a in industry_alerts)
+        },
     }
 
 
@@ -379,6 +427,49 @@ def checklist_page(request):
         'automated_results': automated_results,
     }
     return render(request, 'assets/checklist.html', context)
+
+
+def decision_log_page(request):
+    """决策日志：汇总卖出决策（含理由）与当前持仓的买入逻辑，落地方案的卖出纪律。"""
+    # 1. 卖出记录（按日期倒序），notes 中携带卖出理由
+    sells = list(
+        Transaction.objects.filter(action='sell')
+        .order_by('-date', '-created_at')
+        .values('id', 'asset_name', 'amount', 'realized_pnl', 'date', 'platform', 'notes')
+    )
+    for s in sells:
+        note = s.get('notes') or ''
+        # 解析「理由：xxx」格式
+        if '理由：' in note:
+            kind, reason = note.split('理由：', 1)
+            s['kind'] = kind.strip('｜ ').strip() or '卖出'
+            s['reason'] = reason.strip()
+        else:
+            s['kind'] = note.strip() or '卖出'
+            s['reason'] = ''
+
+    sell_count = len(sells)
+    total_realized = sum((s['realized_pnl'] or 0) for s in sells)
+    missing_reason = sum(1 for s in sells if not s['reason'])
+
+    # 2. 当前持仓的买入逻辑（区分已填 / 未填）
+    holdings = list(
+        Holding.objects.select_related('layer')
+        .order_by('layer__order', '-market_value')
+    )
+    with_thesis = [h for h in holdings if (h.buy_thesis or '').strip()]
+    without_thesis = [h for h in holdings if not (h.buy_thesis or '').strip()]
+
+    context = {
+        'sells': sells,
+        'sell_count': sell_count,
+        'total_realized': total_realized,
+        'missing_reason': missing_reason,
+        'with_thesis': with_thesis,
+        'without_thesis': without_thesis,
+        'holdings_count': len(holdings),
+    }
+    return render(request, 'assets/decisions.html', context)
 
 
 def settings_page(request):
@@ -462,6 +553,9 @@ def api_holding_create(request):
         market_value=market_value,
         source=data.get('source', 'manual'),
         platform=data.get('platform', ''),
+        industry=data.get('industry', ''),
+        sub_category=data.get('sub_category', ''),
+        buy_thesis=data.get('buy_thesis', ''),
         notes=data.get('notes', ''),
     )
     # save() 会自动计算盈亏；缺价格信息时保留传入的 market_value
@@ -504,6 +598,12 @@ def api_holding_update(request, holding_id):
         holding.notes = data['notes']
     if 'platform' in data:
         holding.platform = data['platform']
+    if 'industry' in data:
+        holding.industry = data['industry']
+    if 'sub_category' in data:
+        holding.sub_category = data['sub_category']
+    if 'buy_thesis' in data:
+        holding.buy_thesis = data['buy_thesis']
 
     # 数值合法性
     if holding.quantity is not None and holding.quantity < 0:
@@ -549,6 +649,8 @@ def api_holding_sell(request, holding_id):
     sell_amount = Decimal(str(data.get('amount', 0) or 0))
     # 用户在 UI 上明确选择"清仓"时传 confirm_close_all=True
     confirm_close_all = bool(data.get('confirm_close_all', False))
+    # 卖出理由（决策日志）：方案要求每笔卖出写下原因
+    sell_reason = (data.get('reason') or '').strip()
 
     if sell_amount <= 0:
         raise invalid_input('卖出金额必须大于0')
@@ -590,7 +692,7 @@ def api_holding_sell(request, holding_id):
             source='manual',
             realized_pnl=realized_pnl,
             platform=holding.platform,
-            notes='清仓卖出'
+            notes=f'清仓卖出｜理由：{sell_reason}' if sell_reason else '清仓卖出'
         )
         holding.delete()
     else:
@@ -607,7 +709,7 @@ def api_holding_sell(request, holding_id):
             source='manual',
             realized_pnl=realized_pnl,
             platform=holding.platform,
-            notes='部分卖出'
+            notes=f'部分卖出｜理由：{sell_reason}' if sell_reason else '部分卖出'
         )
         # 更新持仓信息
         original_qty = holding.quantity
@@ -992,6 +1094,7 @@ def api_snapshot_create(request):
             'name': h.name,
             'code': h.code,
             'layer': h.layer.name,
+            'layer_order': h.layer.order,
             'platform': h.platform,
             'asset_type': h.asset_type,
             'quantity': float(h.quantity) if h.quantity is not None else 0,
@@ -1141,9 +1244,24 @@ def api_settings_save(request):
         Setting.set('advisor_max_tokens', str(data['advisor_max_tokens']))
 
     if 'layers' in data:
-        for layer_data in data['layers']:
-            layer = get_object_or_404(AssetLayer, id=layer_data['id'])
-            layer.target_ratio = float(layer_data['target_ratio'])
+        # 后端强制校验：目标比例之和必须 ≈100%（与前端保持一致，防止绕过 UI 写入非法配置）。
+        # 比例之和不为 100% 会让所有偏差/再平衡计算失真，是方案落地的硬约束。
+        incoming = {int(ld['id']): float(ld['target_ratio']) for ld in data['layers']}
+        for ratio in incoming.values():
+            if ratio < 0:
+                raise invalid_input('目标比例不能为负数')
+        # 合并未提交的层级现值，按全量层级核对总和
+        all_ratios = {
+            l.id: float(l.target_ratio) for l in AssetLayer.objects.all()
+        }
+        all_ratios.update(incoming)
+        total = sum(all_ratios.values())
+        if abs(total - 100.0) > 0.1:
+            raise invalid_input(f'五层目标比例之和必须等于 100%，当前为 {total:.1f}%')
+
+        for layer_id, ratio in incoming.items():
+            layer = get_object_or_404(AssetLayer, id=layer_id)
+            layer.target_ratio = ratio
             layer.save()
 
     return JsonResponse({'success': True})
@@ -1242,6 +1360,11 @@ def api_import_data(request):
                     profit_loss=hd.get('profit_loss', 0),
                     profit_loss_pct=hd.get('profit_loss_pct', 0),
                     source=hd.get('source', 'manual'),
+                    platform=hd.get('platform', ''),
+                    is_reserve=hd.get('is_reserve', False),
+                    industry=hd.get('industry', ''),
+                    sub_category=hd.get('sub_category', ''),
+                    buy_thesis=hd.get('buy_thesis', ''),
                     notes=hd.get('notes', ''),
                 )
 
@@ -1283,6 +1406,9 @@ def api_backup_create(request):
         'source': h.source,
         'platform': h.platform,
         'is_reserve': h.is_reserve,
+        'industry': h.industry,
+        'sub_category': h.sub_category,
+        'buy_thesis': h.buy_thesis,
         'notes': h.notes,
     } for h in holdings]
 
@@ -1339,6 +1465,9 @@ def api_backup_restore(request, backup_id):
                     source=item.get('source', 'manual'),
                     platform=item.get('platform', ''),
                     is_reserve=item.get('is_reserve', False),
+                    industry=item.get('industry', ''),
+                    sub_category=item.get('sub_category', ''),
+                    buy_thesis=item.get('buy_thesis', ''),
                     notes=item.get('notes', ''),
                 ))
         Holding.objects.bulk_create(restore_holdings)

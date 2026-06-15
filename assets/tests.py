@@ -158,26 +158,26 @@ class RiskAlertsTest(TestCase):
         self.layer5 = AssetLayer.objects.create(name='卫星', target_ratio=15, color='#000', order=5)
 
     def test_concentration_warning(self):
-        """Stock exceeding 5% of total should trigger warning."""
-        h = Holding.objects.create(
+        """v3.4：单只 4%（>3% 红线、≤5%）应触发 warning。"""
+        Holding.objects.create(
             layer=self.layer3, name='集中股',
-            asset_type='stock', market_value=Decimal('6000'),
+            asset_type='stock', market_value=Decimal('4000'),
         )
         holdings = list(Holding.objects.select_related('layer').all())
         alerts = calculate_risk_alerts(holdings, 100000)
-        conc = [a for a in alerts if a['alert_type'] == 'concentration_5pct']
+        conc = [a for a in alerts if a['alert_type'] == 'concentration_cap']
         self.assertEqual(len(conc), 1)
         self.assertEqual(conc[0]['level'], 'warning')
 
     def test_concentration_critical(self):
-        """Stock exceeding 10% should trigger critical."""
+        """v3.4：单只 >5% 应触发 critical。"""
         Holding.objects.create(
             layer=self.layer3, name='超集中股',
-            asset_type='stock', market_value=Decimal('11000'),
+            asset_type='stock', market_value=Decimal('6000'),
         )
         holdings = list(Holding.objects.select_related('layer').all())
         alerts = calculate_risk_alerts(holdings, 100000)
-        conc = [a for a in alerts if a['alert_type'] == 'concentration_5pct']
+        conc = [a for a in alerts if a['alert_type'] == 'concentration_cap']
         self.assertEqual(conc[0]['level'], 'critical')
 
     def test_no_alert_for_fund(self):
@@ -188,32 +188,20 @@ class RiskAlertsTest(TestCase):
         )
         holdings = list(Holding.objects.select_related('layer').all())
         alerts = calculate_risk_alerts(holdings, 100000)
-        conc = [a for a in alerts if a['alert_type'] == 'concentration_5pct']
+        conc = [a for a in alerts if a['alert_type'] == 'concentration_cap']
         self.assertEqual(len(conc), 0)
 
-    def test_satellite_stop_loss(self):
-        """Layer 5 holding with -35% should trigger sl_30 alert."""
+    def test_layer5_no_satellite_ladder(self):
+        """v3.4：第五层已是全球分散，不再触发卫星式止盈止损阶梯。"""
         Holding.objects.create(
-            layer=self.layer5, name='卫星亏损',
-            asset_type='stock', market_value=Decimal('650'),
-            profit_loss_pct=Decimal('-35'),
-        )
-        holdings = list(Holding.objects.select_related('layer').all())
-        alerts = calculate_risk_alerts(holdings, 100000)
-        sl = [a for a in alerts if a['alert_type'] == 'satellite_sl_30']
-        self.assertEqual(len(sl), 1)
-
-    def test_satellite_take_profit(self):
-        """Layer 5 holding with +60% should trigger tp_50 alert."""
-        Holding.objects.create(
-            layer=self.layer5, name='卫星盈利',
+            layer=self.layer5, name='全球分散持仓',
             asset_type='stock', market_value=Decimal('1600'),
             profit_loss_pct=Decimal('60'),
         )
         holdings = list(Holding.objects.select_related('layer').all())
         alerts = calculate_risk_alerts(holdings, 100000)
-        tp = [a for a in alerts if a['alert_type'] == 'satellite_tp_50']
-        self.assertEqual(len(tp), 1)
+        sat = [a for a in alerts if str(a['alert_type']).startswith('satellite')]
+        self.assertEqual(sat, [])
 
     def test_bond_anomaly(self):
         """Bond fund with -2% should trigger warning."""
@@ -234,9 +222,9 @@ class RiskAlertsTest(TestCase):
             asset_type='stock', market_value=Decimal('6000'),
         )
         holdings = list(Holding.objects.select_related('layer').all())
-        acked = {f"{h.id}:concentration_5pct"}
+        acked = {f"{h.id}:concentration_cap"}
         alerts = calculate_risk_alerts(holdings, 100000, acknowledged_keys=acked)
-        conc = [a for a in alerts if a['alert_type'] == 'concentration_5pct']
+        conc = [a for a in alerts if a['alert_type'] == 'concentration_cap']
         self.assertEqual(len(conc), 0)
 
     def test_drawdown_protocol(self):
@@ -625,3 +613,241 @@ class TransactionUpdateRecalcTest(TestCase):
         self.assertEqual(tx.price, Decimal('12.0000'))
         # realized_pnl 重算：amount 1200 - cost 800 = 400
         self.assertEqual(tx.realized_pnl, Decimal('400.00'))
+
+
+# ==================== 方案落地新增功能测试 ====================
+
+from .services.allocation import calculate_sub_allocation, calculate_industry_exposure
+from .services.rebalance import build_market_history
+
+
+class SubAllocationTest(TestCase):
+    """第三层 50/30/20、第四层 黄金/港股 子配置。"""
+
+    def setUp(self):
+        self.l3 = AssetLayer.objects.create(name='股票核心', target_ratio=40, color='#000', order=3)
+        self.l4 = AssetLayer.objects.create(name='另类对冲', target_ratio=15, color='#000', order=4)
+
+    def _holdings(self):
+        return list(Holding.objects.select_related('layer').all())
+
+    def test_layer3_5030_20_balanced(self):
+        Holding.objects.create(layer=self.l3, name='沪深300', asset_type='index_fund', market_value=Decimal('50000'))
+        Holding.objects.create(layer=self.l3, name='红利股', asset_type='dividend_stock', market_value=Decimal('30000'))
+        Holding.objects.create(layer=self.l3, name='成长股', asset_type='stock', market_value=Decimal('20000'))
+        res = calculate_sub_allocation(self._holdings(), 100000)
+        l3 = next(r for r in res if r['layer_order'] == 3)
+        broad = next(i for i in l3['items'] if i['key'] == 'broad')
+        self.assertEqual(broad['actual_ratio'], 50.0)
+        self.assertEqual(broad['status'], 'balanced')
+        self.assertEqual(l3['alerts'], [])
+
+    def test_layer3_deviation_alert(self):
+        # 全部宽基 → 宽基 100%（超目标 50pp），红利/成长 0%（低 30/20pp）
+        Holding.objects.create(layer=self.l3, name='沪深300', asset_type='index_fund', market_value=Decimal('100000'))
+        res = calculate_sub_allocation(self._holdings(), 100000)
+        l3 = next(r for r in res if r['layer_order'] == 3)
+        self.assertTrue(len(l3['alerts']) >= 1)
+        broad = next(i for i in l3['items'] if i['key'] == 'broad')
+        self.assertEqual(broad['status'], 'high')   # 宽基100% > 60% 上限
+
+    def test_layer4_gold_below_range(self):
+        # 黄金占总资产 3% < 下限 5% → low
+        Holding.objects.create(layer=self.l4, name='黄金ETF', asset_type='gold', market_value=Decimal('3000'))
+        res = calculate_sub_allocation(self._holdings(), 100000)
+        l4 = next(r for r in res if r['layer_order'] == 4)
+        gold = next(i for i in l4['items'] if i['key'] == 'gold')
+        self.assertEqual(gold['status'], 'low')
+        self.assertTrue(any('黄金' in a['message'] for a in l4['alerts']))
+
+
+class IndustryExposureTest(TestCase):
+    def setUp(self):
+        self.l3 = AssetLayer.objects.create(name='股票核心', target_ratio=40, color='#000', order=3)
+
+    def test_industry_concentration_critical(self):
+        Holding.objects.create(layer=self.l3, name='白酒1', asset_type='stock',
+                               industry='白酒', market_value=Decimal('35000'))
+        holdings = list(Holding.objects.select_related('layer').all())
+        exp = calculate_industry_exposure(holdings, 100000)
+        self.assertEqual(exp['exposures'][0]['industry'], '白酒')
+        self.assertTrue(any(a['level'] == 'critical' for a in exp['alerts']))
+
+    def test_unclassified_equity_tracked(self):
+        Holding.objects.create(layer=self.l3, name='无行业股', asset_type='stock',
+                               market_value=Decimal('10000'))
+        holdings = list(Holding.objects.select_related('layer').all())
+        exp = calculate_industry_exposure(holdings, 100000)
+        self.assertEqual(exp['unclassified_equity'], 10000.0)
+        self.assertEqual(exp['exposures'], [])
+
+
+class MarketHistoryAlertTest(TestCase):
+    """P2：债基近一月、第三层距峰值、卫星移动止盈。"""
+
+    def setUp(self):
+        self.l2 = AssetLayer.objects.create(name='债券核心', target_ratio=22.5, color='#000', order=2)
+        self.l3 = AssetLayer.objects.create(name='股票核心', target_ratio=40, color='#000', order=3)
+        self.l5 = AssetLayer.objects.create(name='卫星', target_ratio=10, color='#000', order=5)
+
+    def _snap(self, days_ago, holdings_data, layer_values):
+        s = Snapshot.objects.create(
+            total_value=Decimal('100000'),
+            layer_values=layer_values, holdings_data=holdings_data,
+        )
+        # 覆盖 auto_now 的 date
+        Snapshot.objects.filter(pk=s.pk).update(
+            date=timezone.now() - timedelta(days=days_ago))
+        return Snapshot.objects.get(pk=s.pk)
+
+    def test_bond_monthly_drop_uses_recent_window(self):
+        # 债基累计仍为 +5%，但近一月从 +9% 跌到 +5% → 单月 -4% 应触发 critical
+        bond = Holding.objects.create(layer=self.l2, name='某债基', asset_type='bond_fund',
+                                      market_value=Decimal('20000'), profit_loss_pct=Decimal('5'))
+        self._snap(30, [{'name': '某债基', 'market_value': 20800, 'profit_loss_pct': 9.0}], {'债券核心': 20800})
+        mh = build_market_history(list(Snapshot.objects.all()))
+        holdings = list(Holding.objects.select_related('layer').all())
+        alerts = calculate_risk_alerts(holdings, 100000, market_history=mh)
+        bond_alerts = [a for a in alerts if a['alert_type'] == 'bond_anomaly_3pct']
+        self.assertEqual(len(bond_alerts), 1)
+        # 不传 history 时，累计 +5% 不应触发
+        self.assertEqual(
+            [a for a in calculate_risk_alerts(holdings, 100000) if a['alert_type'].startswith('bond_anomaly')],
+            [])
+
+    def test_layer3_drawdown_from_peak(self):
+        # 第三层当前 80000，历史峰值 100000 → 距峰值回撤 20% 应触发 drawdown_20
+        Holding.objects.create(layer=self.l3, name='宽基', asset_type='index_fund',
+                               market_value=Decimal('80000'), cost_price=Decimal('1'),
+                               quantity=Decimal('80000'), current_price=Decimal('1'))
+        self._snap(20, [{'name': '宽基', 'market_value': 100000, 'profit_loss_pct': 0, 'layer_order': 3}], {'股票核心': 100000})
+        mh = build_market_history(list(Snapshot.objects.all()))
+        holdings = list(Holding.objects.select_related('layer').all())
+        alerts = calculate_risk_alerts(holdings, 100000, market_history=mh)
+        dd = [a for a in alerts if a['alert_type'] == 'drawdown_20']
+        self.assertEqual(len(dd), 1)
+        self.assertIn('距峰值', dd[0]['message'])
+
+
+
+class TargetRatioValidationTest(TestCase):
+    """后端拒绝目标比例之和≠100%。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.client = Client()
+        self.l1 = AssetLayer.objects.create(name='L1', target_ratio=50, color='#000', order=1)
+        self.l2 = AssetLayer.objects.create(name='L2', target_ratio=50, color='#000', order=2)
+
+    def test_reject_non_100_sum(self):
+        import json as _json
+        from django.test.utils import override_settings
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post(
+                '/api/settings/save/',
+                data=_json.dumps({'layers': [{'id': self.l1.id, 'target_ratio': 60}]}),
+                content_type='application/json',
+            )
+        # L1=60 + L2=50 = 110% → 拒绝
+        self.assertEqual(resp.status_code, 400)
+        self.l1.refresh_from_db()
+        self.assertEqual(self.l1.target_ratio, Decimal('50.00'))
+
+    def test_accept_100_sum(self):
+        import json as _json
+        from django.test.utils import override_settings
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post(
+                '/api/settings/save/',
+                data=_json.dumps({'layers': [
+                    {'id': self.l1.id, 'target_ratio': 40},
+                    {'id': self.l2.id, 'target_ratio': 60},
+                ]}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.l1.refresh_from_db()
+        self.assertEqual(self.l1.target_ratio, Decimal('40.00'))
+
+
+class SellReasonLoggedTest(TestCase):
+    """卖出理由写入交易备注（决策日志）。"""
+
+    def setUp(self):
+        from django.test import Client
+        self.client = Client()
+        self.l3 = AssetLayer.objects.create(name='股票核心', target_ratio=40, color='#000', order=3)
+
+    def test_sell_reason_persisted(self):
+        import json as _json
+        from django.test.utils import override_settings
+        h = Holding.objects.create(layer=self.l3, name='清仓股', asset_type='stock',
+                                   quantity=Decimal('100'), cost_price=Decimal('10'),
+                                   current_price=Decimal('12'), market_value=Decimal('1200'))
+        with override_settings(AUTH_REQUIRED=False):
+            resp = self.client.post(
+                f'/api/holding/{h.id}/sell/',
+                data=_json.dumps({'quantity': 100, 'amount': 1200, 'reason': '投资逻辑破坏'}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 200)
+        tx = Transaction.objects.filter(action='sell', asset_name='清仓股').first()
+        self.assertIsNotNone(tx)
+        self.assertIn('投资逻辑破坏', tx.notes)
+
+
+class SubCategoryClassificationTest(TestCase):
+    """sub_category 显式分类消歧（review #2）。"""
+
+    def setUp(self):
+        self.l3 = AssetLayer.objects.create(name='第三层·权益核心', target_ratio=35, color='#000', order=3)
+
+    def test_dividend_etf_vs_dividend_pick_separated(self):
+        # 两个都是 dividend_stock：红利低波ETF标 dividend，长江电力标 pick
+        Holding.objects.create(layer=self.l3, name='红利低波', asset_type='dividend_stock',
+                               sub_category='dividend', market_value=Decimal('30000'))
+        Holding.objects.create(layer=self.l3, name='长江电力', asset_type='dividend_stock',
+                               sub_category='pick', industry='公用事业', market_value=Decimal('10000'))
+        holdings = list(Holding.objects.select_related('layer').all())
+        # 子配置：红利桶=30000、精选个股桶=10000
+        sub = next(s for s in calculate_sub_allocation(holdings, 100000) if s['layer_order'] == 3)
+        by_key = {i['key']: i['actual_value'] for i in sub['items']}
+        self.assertEqual(by_key['dividend'], 30000.0)
+        self.assertEqual(by_key['pick'], 10000.0)
+        # 行业 50% 规则只看精选个股层：长江电力计入，红利低波不计入
+        exp = calculate_industry_exposure(holdings, 100000)
+        self.assertEqual(exp['picks_value'], 10000.0)
+        self.assertEqual(exp['picks_industries'][0]['industry'], '公用事业')
+
+    def test_auto_fallback_when_blank(self):
+        # 留空时按 asset_type 回退：index_fund → 宽基
+        Holding.objects.create(layer=self.l3, name='A500', asset_type='index_fund',
+                               market_value=Decimal('50000'))
+        holdings = list(Holding.objects.select_related('layer').all())
+        sub = next(s for s in calculate_sub_allocation(holdings, 100000) if s['layer_order'] == 3)
+        broad = next(i for i in sub['items'] if i['key'] == 'broad')
+        self.assertEqual(broad['actual_value'], 50000.0)
+
+
+class LayerPeakByOrderTest(TestCase):
+    """层级峰值按 order 聚合，改名后历史快照仍命中（review #1）。"""
+
+    def test_peak_resolved_after_layer_rename(self):
+        # 当前层名是新名；历史快照 holdings_data 无 layer_order（旧快照），靠 id 回退到当前 order
+        l3 = AssetLayer.objects.create(name='第三层·权益核心', target_ratio=35, color='#000', order=3)
+        h = Holding.objects.create(layer=l3, name='宽基', asset_type='index_fund',
+                                   market_value=Decimal('80000'), cost_price=Decimal('1'),
+                                   quantity=Decimal('80000'), current_price=Decimal('1'))
+        s = Snapshot.objects.create(
+            total_value=Decimal('100000'),
+            layer_values={'第三层·股票核心': 100000},   # 旧层名
+            holdings_data=[{'id': h.id, 'name': '宽基', 'market_value': 100000, 'profit_loss_pct': 0}],  # 无 layer_order
+        )
+        Snapshot.objects.filter(pk=s.pk).update(date=timezone.now() - timedelta(days=20))
+        holdings = list(Holding.objects.select_related('layer').all())
+        mh = build_market_history(list(Snapshot.objects.all()), holdings=holdings)
+        self.assertEqual(mh['layer_peak_value'].get(3), 100000.0)
+        alerts = calculate_risk_alerts(holdings, 100000, market_history=mh)
+        dd = [a for a in alerts if a['alert_type'] == 'drawdown_20']
+        self.assertEqual(len(dd), 1)
+        self.assertIn('距峰值', dd[0]['message'])

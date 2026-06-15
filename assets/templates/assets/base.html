@@ -55,6 +55,10 @@
                     <span class="nav-icon">✅</span>
                     <span>定期检视</span>
                 </a>
+                <a href="{% url 'assets:decisions' %}" class="nav-item {% if request.resolver_match.url_name == 'decisions' %}active{% endif %}">
+                    <span class="nav-icon">📒</span>
+                    <span>决策日志</span>
+                </a>
                 <a href="{% url 'assets:settings' %}" class="nav-item {% if request.resolver_match.url_name == 'settings' %}active{% endif %}">
                     <span class="nav-icon">⚙️</span>
                     <span>设置</span>
@@ -92,6 +96,20 @@
                     <label class="form-label">卖出总金额 (¥) *</label>
                     <input type="number" class="form-control" id="sellAmount" step="any" placeholder="输入卖出得到的总金额">
                 </div>
+                <div class="form-group">
+                    <label class="form-label">卖出理由 <span class="text-xs text-muted">（写下原因，纳入决策日志）</span></label>
+                    <select class="form-control" id="sellReasonPreset" onchange="onSellReasonPreset()" style="margin-bottom:6px;">
+                        <option value="">— 选择常见信号（可选）—</option>
+                        <option value="再平衡：超配减持回目标比例">再平衡：超配减持</option>
+                        <option value="单票突破3%上限，减仓">单票突破3%上限</option>
+                        <option value="投资逻辑破坏">投资逻辑破坏</option>
+                        <option value="估值极端化">估值极端化</option>
+                        <option value="管理层诚信问题">管理层诚信问题</option>
+                        <option value="行业结构性变化">行业结构性变化</option>
+                        <option value="发现更优机会，置换">更优机会置换</option>
+                    </select>
+                    <textarea class="form-control" id="sellReason" rows="2" placeholder="如：茅台失去提价能力，护城河逻辑破坏，故清仓"></textarea>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeSellModal()">取消</button>
@@ -108,10 +126,17 @@
         document.getElementById('sellCurrentQty').textContent = qty;
         document.getElementById('sellQuantity').value = '';
         document.getElementById('sellAmount').value = '';
+        document.getElementById('sellReason').value = '';
+        document.getElementById('sellReasonPreset').value = '';
         document.getElementById('globalSellModal').classList.add('active');
     }
     function closeSellModal() {
         document.getElementById('globalSellModal').classList.remove('active');
+    }
+    function onSellReasonPreset() {
+        const preset = document.getElementById('sellReasonPreset').value;
+        const box = document.getElementById('sellReason');
+        if (preset && !box.value.trim()) box.value = preset;
     }
     function confirmSell() {
         const id = document.getElementById('sellHoldingId').value;
@@ -146,7 +171,7 @@
                 'Content-Type': 'application/json',
                 'X-CSRFToken': csrfToken || '{{ csrf_token }}',
             },
-            body: JSON.stringify({quantity: qty, amount: amt}),
+            body: JSON.stringify({quantity: qty, amount: amt, reason: document.getElementById('sellReason').value}),
         })
         .then(r => r.json())
         .then(data => {

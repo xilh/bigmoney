@@ -58,7 +58,7 @@ $EXISTING_DATA_BLOCK$
 
 asset_type 枚举：cash, money_fund, bank_product, deposit, bond_fund, convertible_bond, index_fund, stock, etf, dividend_stock, gold, qdii, hk_stock, other
 
-suggested_layer 规则：1=安全垫（现金/货基/银行理财R1-R2/存单） 2=债券（中短债/纯债/可转债） 3=股票核心（沪深300/红利股/A股） 4=另类对冲（黄金/港股/QDII） 5=卫星机会（行业ETF/主题/小盘）
+suggested_layer 规则（v3.4 五层）：1=安全垫（现金/货基/短债/银行理财R1-R2） 2=固收增强（纯债/固收+） 3=权益核心（中证A500/红利低波ETF/A股精选个股） 4=另类对冲（黄金/商品） 5=全球分散（港股通ETF/QDII基金）
 
 ## 提取规则
 

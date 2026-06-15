@@ -214,7 +214,7 @@ tr.platform-hidden {
                         </td>
                         <td>
                             <div class="btn-group">
-                                <button class="btn btn-sm btn-secondary" onclick="openEditModal({{ h.id }}, '{{ h.name|escapejs }}', '{{ h.code }}', '{{ h.asset_type }}', {{ h.quantity }}, {{ h.cost_price|default:'null' }}, {{ h.current_price|default:'null' }}, {{ h.market_value }}, {{ layer.id }}, '{{ h.notes|escapejs }}', '{{ h.platform|escapejs }}')">编辑</button>
+                                <button class="btn btn-sm btn-secondary" onclick="openEditModal({{ h.id }}, '{{ h.name|escapejs }}', '{{ h.code }}', '{{ h.asset_type }}', {{ h.quantity }}, {{ h.cost_price|default:'null' }}, {{ h.current_price|default:'null' }}, {{ h.market_value }}, {{ layer.id }}, '{{ h.notes|escapejs }}', '{{ h.platform|escapejs }}', '{{ h.industry|escapejs }}', '{{ h.buy_thesis|escapejs }}', '{{ h.sub_category|escapejs }}')">编辑</button>
                                 <button class="btn btn-sm btn-warning" style="background:var(--color-warning);color:var(--color-bg);border:none;" onclick="openSellModal({{ h.id }}, '{{ h.name|escapejs }}', {{ h.quantity }})">卖出</button>
                                 <button class="btn btn-sm btn-danger" onclick="deleteHolding({{ h.id }}, '{{ h.name|escapejs }}')">删除</button>
                             </div>
@@ -301,6 +301,36 @@ tr.platform-hidden {
                     <input type="text" class="form-control" id="holdingPlatform" placeholder="如：招商银行、支付宝、天天基金">
                 </div>
                 <div class="form-group">
+                    <label class="form-label">行业/板块</label>
+                    <input type="text" class="form-control" id="holdingIndustry" list="industryOptions" placeholder="如：白酒、银行、科技、电力">
+                    <datalist id="industryOptions">
+                        <option value="白酒"></option><option value="银行"></option>
+                        <option value="科技/互联网"></option><option value="医药"></option>
+                        <option value="电力/公用"></option><option value="能源/煤炭"></option>
+                        <option value="消费"></option><option value="新能源"></option>
+                        <option value="汽车"></option><option value="房地产"></option>
+                        <option value="军工"></option><option value="有色/资源"></option>
+                    </datalist>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">层内子类别 <span class="text-muted text-xs">（留空=按类型自动；红利ETF选红利、个股选精选个股以消歧）</span></label>
+                    <select class="form-control" id="holdingSubCategory">
+                        {% for value, label in sub_category_choices %}
+                        <option value="{{ value }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1;">
+                    <label class="form-label">买入逻辑 <span class="text-muted text-xs">（为什么买，卖出时用于校验逻辑是否破坏）</span></label>
+                    <textarea class="form-control" id="holdingBuyThesis" rows="2" placeholder="如：品牌护城河+定价权 / 稳定现金流+高股息 / 宽基beta长期定投"></textarea>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1;">
                     <label class="form-label">备注</label>
                     <input type="text" class="form-control" id="holdingNotes" placeholder="选填">
                 </div>
@@ -499,12 +529,15 @@ function openAddModal(layerId) {
     document.getElementById('holdingCurrentPrice').value = '';
     document.getElementById('holdingMarketValue').value = '';
     document.getElementById('holdingPlatform').value = '';
+    document.getElementById('holdingIndustry').value = '';
+    document.getElementById('holdingSubCategory').value = '';
+    document.getElementById('holdingBuyThesis').value = '';
     document.getElementById('holdingNotes').value = '';
     if (layerId) document.getElementById('holdingLayer').value = layerId;
     document.getElementById('holdingModal').classList.add('active');
 }
 
-function openEditModal(id, name, code, type, qty, cost, current, mv, layerId, notes, platform) {
+function openEditModal(id, name, code, type, qty, cost, current, mv, layerId, notes, platform, industry, buyThesis, subCategory) {
     document.getElementById('modalTitle').textContent = '编辑持仓';
     document.getElementById('editHoldingId').value = id;
     document.getElementById('holdingName').value = name;
@@ -516,6 +549,9 @@ function openEditModal(id, name, code, type, qty, cost, current, mv, layerId, no
     document.getElementById('holdingMarketValue').value = mv;
     document.getElementById('holdingLayer').value = layerId;
     document.getElementById('holdingPlatform').value = platform || '';
+    document.getElementById('holdingIndustry').value = industry || '';
+    document.getElementById('holdingSubCategory').value = subCategory || '';
+    document.getElementById('holdingBuyThesis').value = buyThesis || '';
     document.getElementById('holdingNotes').value = notes;
     document.getElementById('holdingModal').classList.add('active');
 }
@@ -538,6 +574,9 @@ function saveHolding() {
         market_value: document.getElementById('holdingMarketValue').value || 0,
         notes: document.getElementById('holdingNotes').value,
         platform: document.getElementById('holdingPlatform').value,
+        industry: document.getElementById('holdingIndustry').value,
+        sub_category: document.getElementById('holdingSubCategory').value,
+        buy_thesis: document.getElementById('holdingBuyThesis').value,
         is_correction: isCorrection,
     };
 

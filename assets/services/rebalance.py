@@ -12,25 +12,15 @@ THRESHOLDS = {
     'layer_deviation_warning': 3.0,   # %，接近阈值
     'layer_deviation_critical': 5.0,  # %，立即调整
 
-    # 个股集中度
-    'concentration_warning': 5.0,     # %，单票占总资产上限
-    'concentration_critical': 10.0,   # %，严重超标
+    # 个股集中度（v3.4：单只 ≤ 总资产 3%）
+    'concentration_warning': 3.0,     # %，单票占总资产上限（v3.4 红线）
+    'concentration_critical': 5.0,    # %，严重超标
 
     # 债基异常波动
     'bond_anomaly_warning': -1.0,     # %，盈亏比例
     'bond_anomaly_critical': -3.0,    # %
 
-    # 卫星仓位止盈阶梯
-    'satellite_tp_50': 50.0,
-    'satellite_tp_100': 100.0,
-    'satellite_tp_200': 200.0,
-
-    # 卫星仓位止损阶梯
-    'satellite_sl_30': -30.0,
-    'satellite_sl_50': -50.0,
-    'satellite_sl_70': -70.0,
-
-    # 第三层整体回撤协议
+    # 第三层·权益核心整体回撤协议（距峰值/累计）
     'drawdown_warning': -10.0,
     'drawdown_critical': -20.0,
     'drawdown_extreme': -30.0,
@@ -132,14 +122,90 @@ def calculate_rebalance(layers_data: list, total_value: float) -> dict:
     }
 
 
-def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list:
+def build_market_history(snapshots, holdings=None, today=None):
     """
-    计算基于全部持仓的逐笔风险预警（单票超5%、债基异常、卫星层止盈止损、回撤协议）
+    从历史快照构建用于「口径校准」的市场历史，使预警基于 **层级从峰值回撤 / 持仓近一月变动**，
+    而非累计成本盈亏（更贴合方案中「跌幅」「单月跌幅」的语义）。
+
+    层级峰值按 **order** 聚合（取快照 holdings_data 中各持仓的 layer_order；旧快照若无该字段，
+    则用当前持仓的 id→order 回退）。如此对「层级改名 / 持仓换层」均稳健，不依赖历史层名。
+
+    Args:
+        snapshots: 可迭代的快照对象，需含 .date / .holdings_data
+        holdings: 当前持仓（用于旧快照缺 layer_order 时按 id 回退到当前 order）
+        today: date，默认今日（本地）
+
+    Returns:
+        {
+            'holding_month_ago_pct': {name: 约30天前的累计盈亏%},
+            'layer_peak_value': {order(int): 历史最高层级市值},
+            'has_data': bool,
+        }
+    """
+    out = {
+        'holding_month_ago_pct': {},
+        'layer_peak_value': {},
+        'has_data': False,
+    }
+    snaps = list(snapshots or [])
+    if not snaps:
+        return out
+    out['has_data'] = True
+
+    if today is None:
+        try:
+            from django.utils import timezone
+            today = timezone.localdate()
+        except Exception:
+            pass
+
+    id_to_order = {h.id: h.layer.order for h in (holdings or [])}
+
+    # 层级峰值（按 order 聚合，含全部历史快照）
+    for s in snaps:
+        per_order = {}
+        for h in (s.holdings_data or []):
+            order = h.get('layer_order')
+            if order is None:
+                order = id_to_order.get(h.get('id'))
+            if order is None:
+                continue
+            per_order[order] = per_order.get(order, 0.0) + float(h.get('market_value') or 0)
+        for order, val in per_order.items():
+            if val > out['layer_peak_value'].get(order, 0):
+                out['layer_peak_value'][order] = val
+
+    # 约 30 天前的快照（用于「单月」口径）：取距今 [7, 60] 天内最接近 30 天的一张
+    if today is not None:
+        best = None
+        best_gap = None
+        for s in snaps:
+            sdate = s.date.date() if hasattr(s.date, 'date') else s.date
+            days_ago = (today - sdate).days
+            if days_ago < 7 or days_ago > 60:
+                continue
+            gap = abs(days_ago - 30)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = s, gap
+        if best is not None:
+            for h in (best.holdings_data or []):
+                name = h.get('name')
+                if name:
+                    out['holding_month_ago_pct'][name] = float(h.get('profit_loss_pct') or 0)
+
+    return out
+
+
+def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None, market_history=None) -> list:
+    """
+    计算基于全部持仓的逐笔风险预警（v3.4：单只>3%集中度、债基异常、第三层回撤协议）
 
     Args:
         holdings: QuerySet/list of Holding (需 select_related('layer'))
         total_value: 当前总资产市值
         acknowledged_keys: set of "holding_id:alert_type" strings to skip
+        market_history: build_market_history() 的返回值。提供后，债基异常按「近一月」、
+            第三层回撤按「距峰值」判断；不提供则回退到累计盈亏口径。
 
     Returns:
         list of alert dicts, each with: level, source, message, action, alert_type, holding_id
@@ -149,6 +215,9 @@ def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list
         return alerts
 
     acked = acknowledged_keys or set()
+    mh = market_history or {}
+    month_ago_pct = mh.get('holding_month_ago_pct', {})
+    layer_peak = mh.get('layer_peak_value', {})   # keyed by layer order (int)
 
     def _add(level, source, message, action, alert_type, holding_id):
         key = f"{holding_id}:{alert_type}"
@@ -168,22 +237,31 @@ def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list
         if h.layer.order == 1 and h.is_reserve
     )
 
-    # 按层级汇总持仓盈亏（用于回撤协议判断）
+    # 按层级汇总盈亏（用于回撤协议判断）。
+    #   优先用「距历史峰值的回撤」（方案「跌幅」语义）；无快照历史时回退到累计成本盈亏。
     layer3_holdings = [h for h in holdings if h.layer.order == 3]
-    layer3_total_pl_pct = 0.0
+    layer3_total_pl_pct = 0.0          # 负数表示亏损/回撤，复用既有阈值
+    layer3_basis = "累计"
     if layer3_holdings:
-        layer3_cost = sum(
-            float((h.cost_price or 0) * h.quantity) for h in layer3_holdings
-            if h.cost_price and h.quantity
-        )
-        layer3_pl = sum(float(h.profit_loss or 0) for h in layer3_holdings)
-        if layer3_cost > 0:
-            layer3_total_pl_pct = layer3_pl / layer3_cost * 100
+        layer3_cur_value = sum(float(h.market_value or 0) for h in layer3_holdings)
+        l3_peak = layer_peak.get(3, 0)   # 按 order 取峰值，不依赖层名
+        if l3_peak > 0 and layer3_cur_value > 0 and l3_peak > layer3_cur_value:
+            # 距峰值回撤（转为负数以复用阈值）
+            layer3_total_pl_pct = -((l3_peak - layer3_cur_value) / l3_peak * 100)
+            layer3_basis = "距峰值"
+        else:
+            layer3_cost = sum(
+                float((h.cost_price or 0) * h.quantity) for h in layer3_holdings
+                if h.cost_price and h.quantity
+            )
+            layer3_pl = sum(float(h.profit_loss or 0) for h in layer3_holdings)
+            if layer3_cost > 0:
+                layer3_total_pl_pct = layer3_pl / layer3_cost * 100
 
     for h in holdings:
         h_id = h.id
 
-        # 1. 个股集中度预警
+        # 1. 个股集中度预警（v3.4：单只 ≤ 总资产 3%）
         if h.asset_type in ('stock', 'dividend_stock', 'hk_stock'):
             if h.market_value and total_value > 0:
                 pct = float(h.market_value) / total_value * 100
@@ -191,85 +269,59 @@ def calculate_risk_alerts(holdings, total_value, acknowledged_keys=None) -> list
                     level = "critical" if pct > THRESHOLDS['concentration_critical'] else "warning"
                     _add(level, h.name,
                          f"单票集中度过高（当前占比 {pct:.1f}%）",
-                         f"突破{THRESHOLDS['concentration_warning']:.0f}%天花板，建议在本月内分批减仓至总比例的{THRESHOLDS['concentration_warning']:.0f}%以下。",
-                         "concentration_5pct", h_id)
+                         f"突破 v3.4 单只 {THRESHOLDS['concentration_warning']:.0f}% 红线，分批减仓至总资产 {THRESHOLDS['concentration_warning']:.0f}% 以下。",
+                         "concentration_cap", h_id)
 
         # 2. 债券基金异常波动预警
-        if h.asset_type in ('bond_fund', 'convertible_bond') and h.profit_loss_pct:
-            pl_pct = float(h.profit_loss_pct)
-            if pl_pct < THRESHOLDS['bond_anomaly_critical']:
-                _add("critical", h.name,
-                     f"债基异常波动（盈亏 {pl_pct:+.1f}%）",
-                     "可能信用事件或极端利率环境，审视持仓是否有信用违约风险，如有则转换为利率债基金或货币基金。",
-                     "bond_anomaly_3pct", h_id)
-            elif pl_pct < THRESHOLDS['bond_anomaly_warning']:
-                _add("warning", h.name,
-                     f"债基波动偏大（盈亏 {pl_pct:+.1f}%）",
-                     "检查原因：若为利率政策冲击，可继续持有；考虑缩短久期，换入更短期限的债基。",
-                     "bond_anomaly_1pct", h_id)
+        #    优先用「近一月变动」（方案口径：单月跌幅>1%/3%）；无快照历史时回退到累计盈亏。
+        if h.asset_type in ('bond_fund', 'convertible_bond'):
+            if h.name in month_ago_pct and h.profit_loss_pct is not None:
+                metric = float(h.profit_loss_pct) - month_ago_pct[h.name]  # 近一月百分点变动
+                basis_label = "近一月"
+            elif h.profit_loss_pct:
+                metric = float(h.profit_loss_pct)  # 回退：累计
+                basis_label = "累计"
+            else:
+                metric = None
+            if metric is not None:
+                if metric < THRESHOLDS['bond_anomaly_critical']:
+                    _add("critical", h.name,
+                         f"债基异常波动（{basis_label} {metric:+.1f}%）",
+                         "可能信用事件或极端利率环境，审视持仓是否有信用违约风险，如有则转换为利率债基金或货币基金。",
+                         "bond_anomaly_3pct", h_id)
+                elif metric < THRESHOLDS['bond_anomaly_warning']:
+                    _add("warning", h.name,
+                         f"债基波动偏大（{basis_label} {metric:+.1f}%）",
+                         "检查原因：若为利率政策冲击，可继续持有；考虑缩短久期，换入更短期限的债基。",
+                         "bond_anomaly_1pct", h_id)
 
-        # 3. 第五层（卫星仓位）止盈止损纪律
-        if hasattr(h, 'layer') and h.layer.order == 5 and h.profit_loss_pct:
-            pl_pct = float(h.profit_loss_pct)
+        # （v3.4：原「第五层卫星仓位」已重定义为「全球分散」纯DCA层，
+        #   不再适用个股式止盈止损阶梯；精选个股退出改由「卖出五大信号 + 决策日志」管理。）
 
-            # 止盈（取最高档，不重复）
-            if pl_pct >= THRESHOLDS['satellite_tp_200']:
-                _add("success", h.name,
-                     f"强力复利达成（盈亏 {pl_pct:+.1f}%）",
-                     "卖出三分之二部分，将利润回收到第一层或核心宽基层级，剩余部分继续持有。",
-                     "satellite_tp_200", h_id)
-            elif pl_pct >= THRESHOLDS['satellite_tp_100']:
-                _add("success", h.name,
-                     f"盈利翻倍（盈亏 {pl_pct:+.1f}%）",
-                     "建议卖出一半收回成本，将剩余转化为「零成本仓位」，设定最高点回撤 15% 的移动止盈线。",
-                     "satellite_tp_100", h_id)
-            elif pl_pct >= THRESHOLDS['satellite_tp_50']:
-                _add("info", h.name,
-                     f"可观利润（盈亏 {pl_pct:+.1f}%）",
-                     "建议设定最高点回撤 20% 的移动止盈线防坐过山车。",
-                     "satellite_tp_50", h_id)
-
-            # 止损（取最严重档，不重复）
-            if pl_pct <= THRESHOLDS['satellite_sl_70']:
-                _add("critical", h.name,
-                     f"穿透底线（亏损 {pl_pct:+.1f}%）",
-                     "无条件止损！接受「学费」，切勿补仓摆平成本，不要幻想反弹。",
-                     "satellite_sl_70", h_id)
-            elif pl_pct <= THRESHOLDS['satellite_sl_50']:
-                _add("critical", h.name,
-                     f"高危亏损（亏损 {pl_pct:+.1f}%）",
-                     "默认止损点已触发。除非有极其强烈的理由继续持有，否则应立刻清仓。",
-                     "satellite_sl_50", h_id)
-            elif pl_pct <= THRESHOLDS['satellite_sl_30']:
-                _add("warning", h.name,
-                     f"逻辑验证预警（亏损 {pl_pct:+.1f}%）",
-                     "强制重新审视投资逻辑。若写不出有说服力的持仓理由，请立即止损。",
-                     "satellite_sl_30", h_id)
-
-    # 4. 第三层整体回撤 → 下跌应对协议自动建议
+    # 4. 第三层·权益核心整体回撤 → 下跌应对建议
     if layer3_total_pl_pct <= THRESHOLDS['drawdown_extreme']:
         reserve_hint = f"（当前干火药储备 ¥{reserve_value:,.0f}）" if reserve_value > 0 else "（未标记干火药储备）"
         alerts.append({
             "level": "critical",
-            "source": "第三层·股票核心",
-            "message": f"极端恐慌回撤（整体亏损 {layer3_total_pl_pct:.1f}%）",
-            "action": f"历史性买入机会！动用全部干火药及第五层现金加仓指数基金，分3-4批、每批间隔1-2周。{reserve_hint}",
+            "source": "第三层·权益核心",
+            "message": f"极端恐慌回撤（{layer3_basis} {layer3_total_pl_pct:.1f}%）",
+            "action": f"历史性买入机会！动用全部干火药分批加仓宽基(中证A500)，分3-4批、每批间隔1-2周。{reserve_hint}",
             "alert_type": "drawdown_30", "holding_id": None,
         })
     elif layer3_total_pl_pct <= THRESHOLDS['drawdown_critical']:
         reserve_hint = f"（当前干火药储备 ¥{reserve_value:,.0f}）" if reserve_value > 0 else "（未标记干火药储备）"
         alerts.append({
             "level": "critical",
-            "source": "第三层·股票核心",
-            "message": f"显著回撤（整体亏损 {layer3_total_pl_pct:.1f}%）",
+            "source": "第三层·权益核心",
+            "message": f"显著回撤（{layer3_basis} {layer3_total_pl_pct:.1f}%）",
             "action": f"动用第一层干火药储备分三批加仓指数基金，1-2周内启动第一批。{reserve_hint}",
             "alert_type": "drawdown_20", "holding_id": None,
         })
     elif layer3_total_pl_pct <= THRESHOLDS['drawdown_warning']:
         alerts.append({
             "level": "warning",
-            "source": "第三层·股票核心",
-            "message": f"明显调整（整体亏损 {layer3_total_pl_pct:.1f}%）",
+            "source": "第三层·权益核心",
+            "message": f"明显调整（{layer3_basis} {layer3_total_pl_pct:.1f}%）",
             "action": "检查各层级偏差，如触发5%偏差则执行触发式再平衡，季度检视时处理。",
             "alert_type": "drawdown_10", "holding_id": None,
         })
@@ -412,37 +464,72 @@ def generate_investment_plan(layers_data, holdings, total_value, rebalance_resul
     return plan
 
 
-# 下跌应对协议数据（基于文档第三节）
+# 极端情景应对手册（v3.4 §六，5类情景触发表）
 DRAWDOWN_PROTOCOLS = {
-    "layer_1_2": {
-        "name": "第一层/第二层（安全垫 + 债券）",
+    "a_share_crash": {
+        "name": "A股单日跌幅 ≥ 5%",
         "rules": [
-            {"threshold": "单月跌幅 >1%", "action": "检查原因。如为利率政策冲击（央行加息），继续持有。可考虑缩短久期，换入更短期限的债基。"},
-            {"threshold": "单月跌幅 >3%", "action": "可能信用事件或极端利率环境。审视基金持仓是否有信用违约风险，如有则立即转换为利率债基金或货币基金。"},
+            {"threshold": "触发", "action": "不恐慌卖出。检查各层级偏差，若 T3 偏离触发再平衡则按机械规则加仓宽基(中证A500)。DCA 继续，不停。"},
         ],
     },
-    "layer_3": {
-        "name": "第三层（股票核心）",
+    "gold_swing": {
+        "name": "黄金单周波动 ≥ 8%",
         "rules": [
-            {"threshold": "跌幅 0–10%", "action": "正常波动，市场噪音。不做任何操作，DCA阶段继续执行定投。"},
-            {"threshold": "跌幅 10–20%", "action": "明显调整，但仍属常见范围。检查各层级偏差，如触发5%偏差则执行触发式再平衡。季度检视时处理。"},
-            {"threshold": "跌幅 20–30%", "action": "显著回撤，A股每3–5年会发生一次。动用第一层「干火药」储备加仓指数基金，分三批投入。发现后1–2周内启动第一批。"},
-            {"threshold": "跌幅 >30%", "action": "极端恐慌，历史性买入机会。将第五层现金也加仓至指数基金。「别人恐惧我贪婪」。分3–4批，每批间隔1–2周。"},
+            {"threshold": "触发", "action": "回到黄金双指标判断表（实质金价分位 + Gold/SPX 比价分位），按状态决定建仓/暂停/减配，不凭单周波动操作。"},
         ],
     },
-    "layer_4": {
-        "name": "第四层（黄金/港股）",
+    "single_holding_drop": {
+        "name": "单一持仓单日跌 ≥ 10%",
         "rules": [
-            {"threshold": "黄金单独下跌 15–20%", "action": "正常波动。持有不动。黄金的价值在于与股票的低相关性，而非短期回报。"},
-            {"threshold": "黄金与股票同时下跌", "action": "可能是流动性危机（类似2020年初）。继续持有，黄金通常最先反弹。"},
-            {"threshold": "黄金跌而股票涨", "action": "正常的资产轮动，组合正在按设计运行。不需操作。"},
+            {"threshold": "触发", "action": "对照「卖出五大信号」核验投资逻辑是否破坏；逻辑未变→持有/按计划，逻辑变→按退出条件分批处理。先看基本面，不看当日情绪。"},
         ],
     },
-    "layer_5": {
-        "name": "第五层（卫星仓位）",
+    "bond_redemption": {
+        "name": "T2 固收增强债基赎回潮 ≥ 5%",
         "rules": [
-            {"threshold": "单笔投资跌 40%+", "action": "问自己：投资逻辑是否已变？如果没变→继续持有或小幅加仓。如果变了→果断止损。"},
-            {"threshold": "单笔投资跌 70%+", "action": "基本确认论点失败。止损或接受为「学费」，不要补仓摊平成本。"},
+            {"threshold": "触发", "action": "审视是否信用事件或极端利率环境；若信用风险则转利率债/货基，若纯利率冲击可缩短久期后继续持有。"},
+        ],
+    },
+    "fx_swing": {
+        "name": "美元/人民币单月波动 ≥ 3%",
+        "rules": [
+            {"threshold": "触发", "action": "影响 T5 全球分散的汇率分位。人民币强势区正常 DCA 配置 QDII/港股通；人民币弱势区放缓新增换汇节奏，不追汇率。"},
         ],
     },
 }
+
+
+# 分级 DCA 规则表（v3.4 §5.2.1）
+DCA_RULES = [
+    {"asset": "宽基指数 (中证A500)", "mode": "纯DCA", "freq": "季度", "rule": "PE分位 > 90% 降频 50%", "asset_types": ["index_fund"]},
+    {"asset": "红利低波 (512890)", "mode": "半估值触发", "freq": "季度", "rule": "股息率分位：>60% 正常DCA / 30-60% 降频 / <30% 暂停（v3.4实证 4.90%，约60-75%分位 → 正常DCA）", "asset_types": ["dividend_stock"]},
+    {"asset": "黄金 (华安518880)", "mode": "双指标触发", "freq": "每月", "rule": "实质金价分位 + Gold/SPX 比价分位（当前 A:80-85% / B:50-60% → 暂停建仓）", "asset_types": ["gold"]},
+    {"asset": "纳指/科技ETF", "mode": "估值触发", "freq": "每月", "rule": "Shiller PE 分位", "asset_types": ["qdii"]},
+    {"asset": "精选个股", "mode": "估值触发 + 买入门槛", "freq": "季度", "rule": "PE/PB分位 + 五项买入门槛", "asset_types": ["stock"]},
+    {"asset": "港股通 / QDII", "mode": "纯DCA", "freq": "季度核对汇率分位", "rule": "人民币强势区正常 DCA", "asset_types": ["hk_stock"]},
+]
+
+
+# 黄金双指标判断（v3.4 §2.3，5状态）
+GOLD_DUAL_INDICATOR = {
+    "name": "黄金双指标规则",
+    "indicators": ["指标A：实质金价（剔除通胀）分位", "指标B：Gold/SPX 比价分位"],
+    "current": "当前评估 A约80-85%、B约50-60% → ⏸ 暂停建仓",
+    "states": [
+        {"state": "A低 + B低", "action": "✅ 积极建仓（黄金便宜且相对股票便宜）"},
+        {"state": "A低 + B高", "action": "✅ 正常DCA"},
+        {"state": "A中 + B中", "action": "⚠ 正常DCA，观察"},
+        {"state": "A高 + B低", "action": "⚠ 降频，相对股票仍有价值"},
+        {"state": "A高 + B高", "action": "⏸ 暂停建仓（黄金贵且相对股票也贵）"},
+    ],
+}
+
+
+# 精选个股买入门槛（v3.4 §2.2.2，5项必须全部满足）
+STOCK_BUY_GATES = [
+    "研究报告：至少一页 A4 买入理由（可手写可电子）",
+    "估值依据：PE/PB/股息率分位明确，或有清晰 DCF 逻辑",
+    "行业约束：不突破单一申万一级行业 ≤ 精选个股层 50%",
+    "仓位上限：单只 ≤ 总资产 3%",
+    "退出条件：买入前写清卖出信号（对应卖出五大信号的具体化）",
+]
